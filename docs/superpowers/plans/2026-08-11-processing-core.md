@@ -844,6 +844,9 @@ def test_set_stage_records_progress(store):
 def test_finish_stores_result_and_clears_stage(store):
     job_id = store.create_job(_new_track(store))
     store.claim_next()
+    # Стадию надо выставить, иначе она None с самого начала и проверка
+    # «снята после finish» ничего не доказывает.
+    store.set_stage(job_id, Stage.SEPARATING, 0.5)
     store.finish(job_id, {"stems": {"vocals": "k1", "no_vocals": "k2"}})
     job = store.get_job(job_id)
     assert job.status is JobStatus.DONE
@@ -856,6 +859,7 @@ def test_finish_stores_result_and_clears_stage(store):
 def test_fail_stores_message(store):
     job_id = store.create_job(_new_track(store))
     store.claim_next()
+    store.set_stage(job_id, Stage.SEPARATING, 0.5)
     store.fail(job_id, "CUDA out of memory")
     job = store.get_job(job_id)
     assert job.status is JobStatus.FAILED
@@ -866,6 +870,7 @@ def test_fail_stores_message(store):
 def test_fail_orphans_marks_running_jobs_failed(store, tmp_path):
     job_id = store.create_job(_new_track(store))
     store.claim_next()
+    store.set_stage(job_id, Stage.LOADING, 0.1)
 
     reopened = JobStore(tmp_path / "test.db")
     count = reopened.fail_orphans()
@@ -873,6 +878,7 @@ def test_fail_orphans_marks_running_jobs_failed(store, tmp_path):
     assert count == 1
     job = reopened.get_job(job_id)
     assert job.status is JobStatus.FAILED
+    assert job.stage is None
     assert "прерван" in job.error_message
 
 
@@ -884,9 +890,13 @@ def test_fail_orphans_leaves_queued_alone(store, tmp_path):
 
 def test_list_expired_tracks_respects_cutoff(store):
     track_id = _new_track(store)
+    # cutoff в прошлом — трек ещё жив; cutoff в будущем — уже просрочен.
+    # Брать cutoff = now нельзя: трек создан микросекундами раньше и всегда
+    # окажется просроченным.
     future = datetime.now(timezone.utc) + timedelta(hours=25)
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
     assert store.list_expired_tracks(future) == [track_id]
-    assert store.list_expired_tracks(datetime.now(timezone.utc)) == []
+    assert store.list_expired_tracks(past) == []
 
 
 def test_delete_track_removes_track_and_jobs(store):
