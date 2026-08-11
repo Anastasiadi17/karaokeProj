@@ -68,6 +68,7 @@ def test_set_stage_records_progress(store):
 def test_finish_stores_result_and_clears_stage(store):
     job_id = store.create_job(_new_track(store))
     store.claim_next()
+    store.set_stage(job_id, Stage.SEPARATING, 0.5)
     store.finish(job_id, {"stems": {"vocals": "k1", "no_vocals": "k2"}})
     job = store.get_job(job_id)
     assert job.status is JobStatus.DONE
@@ -80,6 +81,7 @@ def test_finish_stores_result_and_clears_stage(store):
 def test_fail_stores_message(store):
     job_id = store.create_job(_new_track(store))
     store.claim_next()
+    store.set_stage(job_id, Stage.SEPARATING, 0.5)
     store.fail(job_id, "CUDA out of memory")
     job = store.get_job(job_id)
     assert job.status is JobStatus.FAILED
@@ -90,6 +92,7 @@ def test_fail_stores_message(store):
 def test_fail_orphans_marks_running_jobs_failed(store, tmp_path):
     job_id = store.create_job(_new_track(store))
     store.claim_next()
+    store.set_stage(job_id, Stage.LOADING, 0.1)
 
     reopened = JobStore(tmp_path / "test.db")
     count = reopened.fail_orphans()
@@ -98,6 +101,7 @@ def test_fail_orphans_marks_running_jobs_failed(store, tmp_path):
     job = reopened.get_job(job_id)
     assert job.status is JobStatus.FAILED
     assert "прерван" in job.error_message
+    assert job.stage is None
 
 
 def test_fail_orphans_leaves_queued_alone(store, tmp_path):
