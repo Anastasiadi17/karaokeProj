@@ -15,7 +15,7 @@ class LocalStorage:
             raise ValueError(f"недопустимый ключ: {key!r}")
         path = (self._root / key).resolve()
         root = self._root.resolve()
-        if root != path and root not in path.parents:
+        if root not in path.parents:
             raise ValueError(f"ключ выходит за пределы хранилища: {key!r}")
         return path
 
@@ -60,6 +60,6 @@ class LocalStorage:
     def delete_prefix(self, prefix: str) -> None:
         target = self._resolve(prefix)
         if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
+            shutil.rmtree(target)
         elif target.is_file():
             target.unlink()

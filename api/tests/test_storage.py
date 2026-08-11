@@ -73,3 +73,21 @@ def test_delete_prefix_removes_subtree(storage, source_file):
 def test_key_traversal_is_rejected(storage, source_file):
     with pytest.raises(ValueError):
         storage.store_file("../escape.bin", source_file)
+
+
+def test_key_resolving_to_root_is_rejected(storage, source_file):
+    """Keys that normalize to the storage root itself are rejected."""
+    with pytest.raises(ValueError):
+        storage.store_file("tracks/..", source_file)
+
+
+def test_key_with_interior_traversal_to_root_is_rejected(storage, source_file):
+    """Keys with interior .. segments that escape to root are rejected."""
+    with pytest.raises(ValueError):
+        storage.store_file("a/b/../..", source_file)
+
+
+def test_delete_prefix_nonexistent_is_noop(storage):
+    """Deleting a non-existent prefix should not raise an error."""
+    # This should not raise; it's a no-op
+    storage.delete_prefix("nonexistent/path")
