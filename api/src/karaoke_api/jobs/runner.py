@@ -33,8 +33,8 @@ class JobRunner:
             return False
 
         scratch = self._work_dir / job.id
-        scratch.mkdir(parents=True, exist_ok=True)
         try:
+            scratch.mkdir(parents=True, exist_ok=True)
             track = self._store.get_track(job.track_id)
             source = self._storage.materialize(track.storage_key, scratch)
 
@@ -66,6 +66,12 @@ class JobRunner:
         """Цикл опроса. Обработка идёт в пуле потоков, чтобы не блокировать
         событийный цикл FastAPI на десятки секунд."""
         while not self._stopped:
-            did_work = await asyncio.to_thread(self.run_once)
+            try:
+                did_work = await asyncio.to_thread(self.run_once)
+            except Exception:
+                # Цикл обязан пережить всё: иначе один сбой навсегда
+                # останавливает обработку, а сервис продолжает отвечать по HTTP.
+                log.exception("непредвиденный сбой в цикле обработки")
+                did_work = False
             if not did_work:
                 await asyncio.sleep(poll_interval)

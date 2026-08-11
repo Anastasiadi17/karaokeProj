@@ -3,7 +3,6 @@ import pytest
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.runner import JobRunner
 from karaoke_api.jobs.store import JobStore, new_id
-from karaoke_api.separation.base import SeparationResult
 from karaoke_api.separation.fake import FakeSeparator
 from karaoke_api.storage.local import LocalStorage
 
@@ -78,3 +77,20 @@ def test_work_dir_is_cleaned_after_job(wiring):
     JobRunner(store, storage, FakeSeparator(), work).run_once()
 
     assert list(work.iterdir()) == []
+
+
+def test_scratch_dir_creation_failure_marks_job_failed(wiring):
+    """Сбой между claim_next() и открытием try не должен ронять run_once."""
+    store, storage, work, track_id = wiring
+    job_id = store.create_job(track_id)
+
+    # job_id детерминирован store.create_job, поэтому путь под scratch-
+    # директорию задачи известен заранее — занимаем его файлом, чтобы
+    # scratch.mkdir() внутри run_once упал.
+    (work / job_id).write_text("занято")
+
+    runner = JobRunner(store, storage, FakeSeparator(), work)
+    assert runner.run_once() is True
+
+    job = store.get_job(job_id)
+    assert job.status is JobStatus.FAILED
