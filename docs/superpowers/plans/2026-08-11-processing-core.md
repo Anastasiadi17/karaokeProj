@@ -212,7 +212,7 @@ git commit -m "feat(api): каркас проекта и конфигураци�
 
 **Interfaces:**
 - Consumes: `Settings` из Task 1
-- Produces: протокол `Storage` с методами `store_file(key: str, src: Path) -> None`, `materialize(key: str, dest_dir: Path) -> Path`, `read_range(key: str, start: int, length: int) -> bytes`, `size(key: str) -> int`, `exists(key: str) -> bool`, `delete_prefix(prefix: str) -> None`; класс `LocalStorage(root: Path)`.
+- Produces: протокол `Storage` с методами `store_file(key: str, src: Path) -> None`, `materialize(key: str, dest_dir: Path) -> Path`, `read_range(key: str, start: int, length: int) -> bytes`, `iter_range(key: str, start: int, length: int, chunk_size: int = 65536) -> Iterator[bytes]`, `size(key: str) -> int`, `exists(key: str) -> bool`, `delete_prefix(prefix: str) -> None`; класс `LocalStorage(root: Path)`.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -265,6 +265,22 @@ def test_read_range_clamps_past_end(storage, source_file):
     assert storage.read_range("k", 8, 100) == b"89"
 
 
+def test_iter_range_streams_in_chunks(storage, source_file):
+    storage.store_file("k", source_file)
+    chunks = list(storage.iter_range("k", 0, 10, chunk_size=4))
+    assert chunks == [b"0123", b"4567", b"89"]
+
+
+def test_iter_range_stops_at_end_of_file(storage, source_file):
+    storage.store_file("k", source_file)
+    assert b"".join(storage.iter_range("k", 8, 100)) == b"89"
+
+
+def test_iter_range_respects_start(storage, source_file):
+    storage.store_file("k", source_file)
+    assert b"".join(storage.iter_range("k", 5, 3)) == b"567"
+
+
 def test_delete_prefix_removes_subtree(storage, source_file):
     storage.store_file("tracks/abc/a.bin", source_file)
     storage.store_file("tracks/abc/b.bin", source_file)
@@ -291,7 +307,7 @@ Expected: FAIL с `ModuleNotFoundError: No module named 'karaoke_api.storage'`
 
 ```python
 from pathlib import Path
-from typing import Protocol
+from typing import Iterator, Protocol
 
 
 class Storage(Protocol):
@@ -316,6 +332,13 @@ class Storage(Protocol):
         """Прочитать до length байт начиная со start. Обрезается по концу файла."""
         ...
 
+    def iter_range(
+        self, key: str, start: int, length: int, chunk_size: int = 65536
+    ) -> Iterator[bytes]:
+        """То же, но кусками. Дорожка весит десятки мегабайт, и целиком в
+        память её тянуть незачем."""
+        ...
+
     def size(self, key: str) -> int: ...
 
     def exists(self, key: str) -> bool: ...
@@ -332,6 +355,7 @@ class Storage(Protocol):
 ```python
 import shutil
 from pathlib import Path
+from typing import Iterator
 
 
 class LocalStorage:
@@ -366,6 +390,19 @@ class LocalStorage:
             fh.seek(start)
             return fh.read(length)
 
+    def iter_range(
+        self, key: str, start: int, length: int, chunk_size: int = 65536
+    ) -> Iterator[bytes]:
+        remaining = length
+        with self._resolve(key).open("rb") as fh:
+            fh.seek(start)
+            while remaining > 0:
+                chunk = fh.read(min(chunk_size, remaining))
+                if not chunk:
+                    return
+                remaining -= len(chunk)
+                yield chunk
+
     def size(self, key: str) -> int:
         return self._resolve(key).stat().st_size
 
@@ -386,7 +423,7 @@ class LocalStorage:
 - [ ] **Step 5: Запустить тесты, убедиться что проходят**
 
 Run: `.venv/Scripts/python -m pytest tests/test_storage.py -v`
-Expected: PASS, 7 тестов
+Expected: PASS, 10 тестов
 
 - [ ] **Step 6: Коммит**
 
@@ -704,7 +741,11 @@ git commit -m "feat(api): протокол StemSeparator и фейковая р�
 
 **Interfaces:**
 - Consumes: ничего
-- Produces: перечисления `JobStatus` (`QUEUED`/`RUNNING`/`DONE`/`FAILED`) и `Stage` (`LOADING`/`SEPARATING`/`WRITING`); dataclass `Track` и `Job`; класс `JobStore(db_path: Path)` с методами `create_track`, `get_track`, `create_job`, `get_job`, `claim_next`, `set_stage`, `finish`, `fail`, `fail_orphans`, `list_expired_tracks`, `delete_track`.
+- Produces: перечисления `JobStatus` (`QUEUED`/`RUNNING`/`DONE`/`FAILED`) и `Stage` (`LOADING`/`SEPARATING`/`WRITING`); dataclass `Track` и `Job`; функция `new_id() -> str`; класс `JobStore(db_path: Path)` с методами `create_track(track_id, filename, storage_key, duration_sec) -> str`, `get_track`, `create_job`, `get_job`, `claim_next`, `set_stage`, `finish`, `fail`, `fail_orphans`, `list_expired_tracks`, `delete_track`.
+
+Идентификатор трека приходит снаружи: ключ в хранилище строится из него, и
+запись должна попадать в базу сразу с готовым ключом, а не дополняться вторым
+запросом.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -716,7 +757,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from karaoke_api.jobs.models import JobStatus, Stage
-from karaoke_api.jobs.store import JobStore
+from karaoke_api.jobs.store import JobStore, new_id
 
 
 @pytest.fixture
@@ -724,9 +765,21 @@ def store(tmp_path):
     return JobStore(tmp_path / "test.db")
 
 
-def _new_track(store, key="tracks/t1/original.wav", duration=12.5):
-    return store.create_track(filename="song.wav", storage_key=key,
-                              duration_sec=duration)
+def _new_track(store, key=None, duration=12.5):
+    track_id = new_id()
+    return store.create_track(
+        track_id, "song.wav", key or f"tracks/{track_id}/original.wav", duration
+    )
+
+
+def test_new_id_is_unique(store):
+    assert new_id() != new_id()
+
+
+def test_create_track_returns_given_id(store):
+    track_id = new_id()
+    assert store.create_track(track_id, "s.wav", "k", 1.0) == track_id
+    assert store.get_track(track_id).storage_key == "k"
 
 
 def test_created_job_is_queued(store):
@@ -751,8 +804,8 @@ def test_claim_next_returns_none_when_empty(store):
 
 
 def test_claim_next_is_fifo(store):
-    first = store.create_job(_new_track(store, key="a"))
-    second = store.create_job(_new_track(store, key="b"))
+    first = store.create_job(_new_track(store))
+    second = store.create_job(_new_track(store))
     assert store.claim_next().id == first
     assert store.claim_next().id == second
 
@@ -922,6 +975,11 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def new_id() -> str:
+    """Идентификатор трека или задачи."""
+    return uuid.uuid4().hex
+
+
 class JobStore:
     """Треки и задачи в SQLite. Одно соединение, сериализованный доступ."""
 
@@ -939,9 +997,10 @@ class JobStore:
 
     # --- треки ---------------------------------------------------------
 
-    def create_track(self, filename: str, storage_key: str,
+    def create_track(self, track_id: str, filename: str, storage_key: str,
                      duration_sec: float) -> str:
-        track_id = uuid.uuid4().hex
+        """Идентификатор приходит снаружи: ключ в хранилище строится из него,
+        поэтому к моменту вставки он уже известен."""
         self._conn.execute(
             "INSERT INTO tracks (id, filename, storage_key, duration_sec,"
             " created_at) VALUES (?, ?, ?, ?, ?)",
@@ -978,7 +1037,7 @@ class JobStore:
     # --- задачи --------------------------------------------------------
 
     def create_job(self, track_id: str) -> str:
-        job_id = uuid.uuid4().hex
+        job_id = new_id()
         self._conn.execute(
             "INSERT INTO jobs (id, track_id, status, progress, created_at)"
             " VALUES (?, ?, ?, 0, ?)",
@@ -1063,7 +1122,7 @@ class JobStore:
 - [ ] **Step 5: Запустить тесты, убедиться что проходят**
 
 Run: `.venv/Scripts/python -m pytest tests/test_job_store.py -v`
-Expected: PASS, 11 тестов
+Expected: PASS, 13 тестов
 
 - [ ] **Step 6: Коммит**
 
@@ -1093,7 +1152,7 @@ import pytest
 
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.runner import JobRunner
-from karaoke_api.jobs.store import JobStore
+from karaoke_api.jobs.store import JobStore, new_id
 from karaoke_api.separation.base import SeparationResult
 from karaoke_api.separation.fake import FakeSeparator
 from karaoke_api.storage.local import LocalStorage
@@ -1111,9 +1170,10 @@ def wiring(tmp_path, make_wav):
     work = tmp_path / "work"
     work.mkdir()
 
-    source = make_wav(duration_sec=1.0)
-    storage.store_file("tracks/t1/original.wav", source)
-    track_id = store.create_track("song.wav", "tracks/t1/original.wav", 1.0)
+    track_id = new_id()
+    key = f"tracks/{track_id}/original.wav"
+    storage.store_file(key, make_wav(duration_sec=1.0))
+    store.create_track(track_id, "song.wav", key, 1.0)
 
     return store, storage, work, track_id
 
@@ -1272,7 +1332,6 @@ git commit -m "feat(api): фоновый исполнитель задач"
 **Files:**
 - Create: `api/src/karaoke_api/deps.py`
 - Create: `api/src/karaoke_api/main.py`
-- Modify: `api/src/karaoke_api/jobs/store.py` (добавить `set_track_key`, шаг 5)
 - Create: `api/tests/test_upload.py`
 
 **Interfaces:**
@@ -1413,6 +1472,7 @@ from fastapi.responses import JSONResponse
 from .audio.probe import UnsupportedAudio, probe_audio
 from .config import Settings, get_settings
 from .deps import AppState
+from .jobs.store import new_id
 
 log = logging.getLogger(__name__)
 
@@ -1466,14 +1526,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if info.duration_sec > limits.max_duration_sec:
                 return _error("too_long")
 
-            track_id = state.store.create_track(
-                filename=file.filename or "upload",
-                storage_key="",
-                duration_sec=info.duration_sec,
-            )
+            # Идентификатор выдаётся до вставки: ключ строится из него, и
+            # запись попадает в базу сразу целиком.
+            track_id = new_id()
             key = f"tracks/{track_id}/original.{info.format}"
             state.storage.store_file(key, staged)
-            state.store.set_track_key(track_id, key)
+            state.store.create_track(
+                track_id, file.filename or "upload", key, info.duration_sec
+            )
 
         job_id = state.store.create_job(track_id)
         return {"track_id": track_id, "job_id": job_id}
@@ -1484,30 +1544,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step 5: Добавить недостающий метод в `JobStore`**
-
-В `api/src/karaoke_api/jobs/store.py` добавить после `create_track`:
-
-```python
-    def set_track_key(self, track_id: str, storage_key: str) -> None:
-        self._conn.execute(
-            "UPDATE tracks SET storage_key = ? WHERE id = ?",
-            (storage_key, track_id),
-        )
-        self._conn.commit()
-```
-
-- [ ] **Step 6: Запустить тесты, убедиться что проходят**
+- [ ] **Step 5: Запустить тесты, убедиться что проходят**
 
 Run: `.venv/Scripts/python -m pytest tests/test_upload.py -v`
 Expected: PASS, 5 тестов
 
-- [ ] **Step 7: Прогнать весь набор**
+- [ ] **Step 6: Прогнать весь набор**
 
 Run: `.venv/Scripts/python -m pytest -v`
 Expected: PASS, все тесты задач 1–7
 
-- [ ] **Step 8: Коммит**
+- [ ] **Step 7: Коммит**
 
 ```bash
 cd .. && git add api/src/karaoke_api api/tests/test_upload.py
@@ -1816,7 +1863,10 @@ Expected: FAIL — маршрут не объявлен
 
 - [ ] **Step 7: Добавить эндпоинт**
 
-В `api/src/karaoke_api/main.py` добавить импорт `from fastapi.responses import Response` рядом с `JSONResponse`, импорт `from .ranges import parse_range`, и вставить перед `return app`:
+В `api/src/karaoke_api/main.py` добавить импорт
+`from fastapi.responses import Response, StreamingResponse` рядом с
+`JSONResponse`, импорт `from .ranges import parse_range`, и вставить перед
+`return app`:
 
 ```python
     _STEM_KINDS = ("vocals", "no_vocals")
@@ -1839,15 +1889,24 @@ Expected: FAIL — маршрут не объявлен
                 status_code=416, headers={"Content-Range": f"bytes */{total}"}
             )
 
-        headers = {"Accept-Ranges": "bytes", "Content-Type": "audio/wav"}
-        if rng is None:
-            body = state.storage.read_range(key, 0, total)
-            return Response(body, status_code=200, headers=headers)
+        start, end = rng if rng else (0, total - 1)
+        length = end - start + 1
 
-        start, end = rng
-        body = state.storage.read_range(key, start, end - start + 1)
-        headers["Content-Range"] = f"bytes {start}-{end}/{total}"
-        return Response(body, status_code=206, headers=headers)
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+        }
+        if rng is not None:
+            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+
+        # Дорожка весит десятки мегабайт: отдаём потоком, а не одним куском
+        # в памяти на каждый запрос.
+        return StreamingResponse(
+            state.storage.iter_range(key, start, length),
+            status_code=206 if rng else 200,
+            media_type="audio/wav",
+            headers=headers,
+        )
 ```
 
 - [ ] **Step 8: Запустить тесты, убедиться что проходят**
@@ -1887,7 +1946,7 @@ from fastapi.testclient import TestClient
 
 from karaoke_api.cleanup import purge_expired
 from karaoke_api.config import Settings
-from karaoke_api.jobs.store import JobStore
+from karaoke_api.jobs.store import JobStore, new_id
 from karaoke_api.main import create_app
 from karaoke_api.storage.local import LocalStorage
 
@@ -1896,9 +1955,10 @@ from karaoke_api.storage.local import LocalStorage
 def wiring(tmp_path, make_wav):
     store = JobStore(tmp_path / "db.sqlite")
     storage = LocalStorage(tmp_path / "store")
-    source = make_wav(duration_sec=0.5)
-    track_id = store.create_track("s.wav", "tracks/t1/original.wav", 0.5)
-    storage.store_file(f"tracks/{track_id}/original.wav", source)
+    track_id = new_id()
+    key = f"tracks/{track_id}/original.wav"
+    storage.store_file(key, make_wav(duration_sec=0.5))
+    store.create_track(track_id, "s.wav", key, 0.5)
     return store, storage, track_id
 
 
