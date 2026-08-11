@@ -1185,7 +1185,6 @@ import pytest
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.runner import JobRunner
 from karaoke_api.jobs.store import JobStore, new_id
-from karaoke_api.separation.base import SeparationResult
 from karaoke_api.separation.fake import FakeSeparator
 from karaoke_api.storage.local import LocalStorage
 
@@ -1260,7 +1259,33 @@ def test_work_dir_is_cleaned_after_job(wiring):
     JobRunner(store, storage, FakeSeparator(), work).run_once()
 
     assert list(work.iterdir()) == []
+
+
+def test_failure_before_try_still_fails_the_job(wiring, tmp_path):
+    """Сбой между claim_next и телом try не должен ни вешать задачу в RUNNING,
+    ни выносить исключение в цикл обработки."""
+    store, storage, _, track_id = wiring
+    job_id = store.create_job(track_id)
+
+    # Файл на месте будущего каталога задач: mkdir внутри run_once упадёт.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("не каталог")
+    runner = JobRunner.__new__(JobRunner)
+    runner._store = store
+    runner._storage = storage
+    runner._separator = FakeSeparator()
+    runner._work_dir = blocked
+    runner._stopped = False
+
+    assert runner.run_once() is True
+
+    job = store.get_job(job_id)
+    assert job.status is JobStatus.FAILED
+    assert job.error_message
 ```
+
+Последний тест закрывает главный отказ подсистемы: если исключение вылетит из
+`run_once`, фоновый цикл умрёт молча, а сервис продолжит отвечать по HTTP.
 
 - [ ] **Step 2: Запустить тест, убедиться что падает**
 
@@ -1307,8 +1332,10 @@ class JobRunner:
             return False
 
         scratch = self._work_dir / job.id
-        scratch.mkdir(parents=True, exist_ok=True)
         try:
+            # mkdir обязан быть внутри try: сбой между claim_next и except
+            # оставил бы задачу навсегда в RUNNING и вынес исключение в цикл.
+            scratch.mkdir(parents=True, exist_ok=True)
             track = self._store.get_track(job.track_id)
             source = self._storage.materialize(track.storage_key, scratch)
 
@@ -1340,7 +1367,15 @@ class JobRunner:
         """Цикл опроса. Обработка идёт в пуле потоков, чтобы не блокировать
         событийный цикл FastAPI на десятки секунд."""
         while not self._stopped:
-            did_work = await asyncio.to_thread(self.run_once)
+            try:
+                did_work = await asyncio.to_thread(self.run_once)
+            except Exception:
+                # Цикл обязан пережить всё: иначе один сбой навсегда
+                # останавливает обработку, а сервис продолжает отвечать по HTTP.
+                # did_work = False форсирует паузу — сбой не превратится в
+                # busy-loop.
+                log.exception("непредвиденный сбой в цикле обработки")
+                did_work = False
             if not did_work:
                 await asyncio.sleep(poll_interval)
 ```
@@ -1348,7 +1383,7 @@ class JobRunner:
 - [ ] **Step 4: Запустить тесты, убедиться что проходят**
 
 Run: `.venv/Scripts/python -m pytest tests/test_runner.py -v`
-Expected: PASS, 5 тестов
+Expected: PASS, 6 тестов
 
 - [ ] **Step 5: Коммит**
 
