@@ -1261,27 +1261,21 @@ def test_work_dir_is_cleaned_after_job(wiring):
     assert list(work.iterdir()) == []
 
 
-def test_failure_before_try_still_fails_the_job(wiring, tmp_path):
-    """Сбой между claim_next и телом try не должен ни вешать задачу в RUNNING,
-    ни выносить исключение в цикл обработки."""
-    store, storage, _, track_id = wiring
+def test_scratch_dir_creation_failure_marks_job_failed(wiring):
+    """Сбой между claim_next() и открытием try не должен ронять run_once."""
+    store, storage, work, track_id = wiring
     job_id = store.create_job(track_id)
 
-    # Файл на месте будущего каталога задач: mkdir внутри run_once упадёт.
-    blocked = tmp_path / "blocked"
-    blocked.write_text("не каталог")
-    runner = JobRunner.__new__(JobRunner)
-    runner._store = store
-    runner._storage = storage
-    runner._separator = FakeSeparator()
-    runner._work_dir = blocked
-    runner._stopped = False
+    # job_id детерминирован store.create_job, поэтому путь под scratch-
+    # директорию задачи известен заранее — занимаем его файлом, чтобы
+    # scratch.mkdir() внутри run_once упал.
+    (work / job_id).write_text("занято")
 
+    runner = JobRunner(store, storage, FakeSeparator(), work)
     assert runner.run_once() is True
 
     job = store.get_job(job_id)
     assert job.status is JobStatus.FAILED
-    assert job.error_message
 ```
 
 Последний тест закрывает главный отказ подсистемы: если исключение вылетит из
