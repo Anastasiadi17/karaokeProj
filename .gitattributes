@@ -1,0 +1,9 @@
+# Нормализуем переводы строк в репозитории, в рабочей копии — по платформе
+* text=auto
+
+# Бинарные файлы не трогать
+*.docx binary
+*.wav  binary
+*.mp3  binary
+*.flac binary
+*.m4a  binary
