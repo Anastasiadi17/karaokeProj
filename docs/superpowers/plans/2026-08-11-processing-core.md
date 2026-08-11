@@ -294,7 +294,24 @@ def test_delete_prefix_removes_subtree(storage, source_file):
 def test_key_traversal_is_rejected(storage, source_file):
     with pytest.raises(ValueError):
         storage.store_file("../escape.bin", source_file)
+
+
+def test_key_resolving_to_root_is_rejected(storage, source_file):
+    with pytest.raises(ValueError):
+        storage.store_file("tracks/..", source_file)
+
+
+def test_key_with_interior_traversal_to_root_is_rejected(storage, source_file):
+    with pytest.raises(ValueError):
+        storage.store_file("a/b/../..", source_file)
+
+
+def test_delete_prefix_nonexistent_is_noop(storage):
+    storage.delete_prefix("tracks/никогда-не-существовал")
 ```
+
+Три последних теста закрывают границу безопасности: ключ не должен ни выходить
+за пределы хранилища, ни совпадать с его корнем.
 
 - [ ] **Step 2: Запустить тест, убедиться что падает**
 
@@ -370,7 +387,10 @@ class LocalStorage:
             raise ValueError(f"недопустимый ключ: {key!r}")
         path = (self._root / key).resolve()
         root = self._root.resolve()
-        if root != path and root not in path.parents:
+        # Path.parents никогда не содержит сам путь, поэтому ключ, схлопнувшийся
+        # ровно в корень (например "tracks/.."), тоже отвергается — иначе
+        # delete_prefix снёс бы всё хранилище.
+        if root not in path.parents:
             raise ValueError(f"ключ выходит за пределы хранилища: {key!r}")
         return path
 
@@ -413,9 +433,11 @@ class LocalStorage:
             return False
 
     def delete_prefix(self, prefix: str) -> None:
+        # Ошибки удаления не глушим: молча провалившаяся уборка по TTL
+        # неотличима от успешной, а диск при этом заполняется.
         target = self._resolve(prefix)
         if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
+            shutil.rmtree(target)
         elif target.is_file():
             target.unlink()
 ```
@@ -423,7 +445,7 @@ class LocalStorage:
 - [ ] **Step 5: Запустить тесты, убедиться что проходят**
 
 Run: `.venv/Scripts/python -m pytest tests/test_storage.py -v`
-Expected: PASS, 10 тестов
+Expected: PASS, 13 тестов
 
 - [ ] **Step 6: Коммит**
 
