@@ -1439,7 +1439,10 @@ def test_accepts_valid_wav(client, make_wav):
 
 
 def test_rejects_too_long(client, make_wav):
-    response = _upload(client, make_wav(duration_sec=6.0))
+    # 5,2 с при 44,1 кГц/стерео/16 бит — это 917 КБ: над лимитом длительности
+    # (5 с), но под лимитом размера (1 МБ). Иначе тест поймает too_large и
+    # проверит не то, чем назван.
+    response = _upload(client, make_wav(duration_sec=5.2))
     assert response.status_code == 400
     assert response.json()["error"] == "too_long"
 
@@ -1466,7 +1469,36 @@ def test_extension_does_not_grant_access(client, make_wav, tmp_path):
     fake = tmp_path / "liar.wav"
     fake.write_bytes(b"still not audio")
     assert _upload(client, fake).json()["error"] == "unsupported_format"
+
+
+def test_readable_but_disallowed_format_is_rejected(client, tmp_path):
+    """OGG читается soundfile, но в allowed_formats его нет."""
+    import numpy as np
+    import soundfile as sf
+
+    ogg = tmp_path / "track.ogg"
+    sf.write(ogg, np.zeros((44100, 2), dtype="float32"), 44100, format="OGG")
+
+    response = _upload(client, ogg, name="track.ogg", mime="audio/ogg")
+    assert response.status_code == 400
+    assert response.json()["error"] == "unsupported_format"
+
+
+def test_filename_cannot_escape_staging_directory(client, make_wav, tmp_path):
+    """Имя из multipart не должно участвовать в построении пути записи."""
+    escaped = tmp_path.parent / "evil.wav"
+    if escaped.exists():
+        escaped.unlink()
+
+    response = _upload(client, make_wav(duration_sec=1.0),
+                       name="../../evil.wav")
+
+    assert response.status_code == 201
+    assert not escaped.exists()
 ```
+
+Последние два теста закрывают границу безопасности загрузки: читаемость файла —
+не разрешение на него, а имя файла — не часть пути.
 
 - [ ] **Step 2: Запустить тест, убедиться что падает**
 
@@ -1522,6 +1554,7 @@ class AppState:
 
 ```python
 import asyncio
+import contextlib
 import logging
 import tempfile
 from contextlib import asynccontextmanager
@@ -1560,6 +1593,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             state.runner.stop()
             task.cancel()
+            # cancel() только планирует отмену. Без await соединение SQLite
+            # закроется раньше, чем воркер домотает свой путь размотки.
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
             state.store.close()
 
     app = FastAPI(title="Karaoke API", lifespan=lifespan)
@@ -1570,7 +1607,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limits = state.settings
 
         with tempfile.TemporaryDirectory() as tmp:
-            staged = Path(tmp) / (file.filename or "upload")
+            # Имя из multipart полностью контролируется клиентом: "../../x"
+            # увело бы запись за пределы каталога ещё до всякой валидации.
+            # Кладём под фиксированным именем, filename оставляем метаданными.
+            staged = Path(tmp) / "upload"
             size = 0
             with staged.open("wb") as out:
                 while chunk := await file.read(1024 * 1024):
@@ -1582,6 +1622,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             try:
                 info = probe_audio(staged)
             except UnsupportedAudio:
+                return _error("unsupported_format")
+
+            if info.format not in limits.allowed_formats:
+                # soundfile читает два десятка форматов сверх нашего списка
+                # (OGG, AIFF, CAF...). Читаемость — не то же самое, что
+                # разрешённость.
                 return _error("unsupported_format")
 
             if info.duration_sec > limits.max_duration_sec:
@@ -1608,7 +1654,7 @@ app = create_app()
 - [ ] **Step 5: Запустить тесты, убедиться что проходят**
 
 Run: `.venv/Scripts/python -m pytest tests/test_upload.py -v`
-Expected: PASS, 5 тестов
+Expected: PASS, 7 тестов
 
 - [ ] **Step 6: Прогнать весь набор**
 
