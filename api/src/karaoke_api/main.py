@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import tempfile
 from contextlib import asynccontextmanager
@@ -37,6 +38,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             state.runner.stop()
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
             state.store.close()
 
     app = FastAPI(title="Karaoke API", lifespan=lifespan)
@@ -47,7 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limits = state.settings
 
         with tempfile.TemporaryDirectory() as tmp:
-            staged = Path(tmp) / (file.filename or "upload")
+            staged = Path(tmp) / "upload"
             size = 0
             with staged.open("wb") as out:
                 while chunk := await file.read(1024 * 1024):
@@ -63,6 +66,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             if info.duration_sec > limits.max_duration_sec:
                 return _error("too_long")
+
+            if info.format not in limits.allowed_formats:
+                return _error("unsupported_format")
 
             # Идентификатор выдаётся до вставки: ключ строится из него, и
             # запись попадает в базу сразу целиком.

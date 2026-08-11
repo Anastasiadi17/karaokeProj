@@ -1,4 +1,8 @@
+import tempfile
+
+import numpy as np
 import pytest
+import soundfile as sf
 from fastapi.testclient import TestClient
 
 from karaoke_api.config import Settings
@@ -63,3 +67,31 @@ def test_extension_does_not_grant_access(client, make_wav, tmp_path):
     fake = tmp_path / "liar.wav"
     fake.write_bytes(b"still not audio")
     assert _upload(client, fake).json()["error"] == "unsupported_format"
+
+
+def test_filename_traversal_is_contained(client, make_wav, tmp_path, monkeypatch):
+    """Client-controlled filename must not let the upload write outside the
+    staging directory. Staging must use a fixed name, not the client's."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    wav = make_wav(duration_sec=1.0)
+
+    response = _upload(client, wav, name="../../evil.wav")
+
+    assert response.status_code == 201
+    # tempfile.TemporaryDirectory() is created directly under tmp_path (our
+    # patched tempdir), so "../../evil.wav" relative to it would resolve to
+    # tmp_path.parent/evil.wav if the filename were used to build the path.
+    assert not (tmp_path.parent / "evil.wav").exists()
+    assert not list(tmp_path.parent.glob("**/evil.wav"))
+
+
+def test_rejects_allowed_but_unlisted_format(client, tmp_path):
+    """OGG is readable by soundfile but is not in Settings.allowed_formats,
+    so it must be rejected on policy, not on readability."""
+    ogg_path = tmp_path / "clip.ogg"
+    sf.write(ogg_path, np.zeros(44100, dtype="float32"), 44100, format="OGG")
+
+    response = _upload(client, ogg_path, name="clip.ogg", mime="audio/ogg")
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "unsupported_format"
