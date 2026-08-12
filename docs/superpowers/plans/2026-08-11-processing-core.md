@@ -2930,7 +2930,19 @@ class DemucsSeparator:
 - отдельный тест `test_load_wav_preserves_channel_order` на файле с заведомо
   разными левым и правым каналом (фикстура `make_wav` пишет одинаковый синус
   в оба канала и не ловит перепутанную ось после `.T`). Он тоже импортирует
-  `torch`/`demucs`, поэтому живёт в этом же файле под тем же `pytestmark`.
+  `torch`/`demucs`, поэтому живёт в этом же файле.
+
+**Финальное ревью ветки сняло с файла модульный `pytestmark`.** Импорты
+уровня модуля выполняются на этапе СБОРКИ, а `-m 'not slow'` фильтрует уже
+после неё — то есть без `pytest.importorskip` весь быстрый набор падал
+ошибкой сбора на машине без gpu-группы, вопреки ограничению плана «быстрые
+тесты не требуют GPU». `exc_type=ImportError` вместо умолчания
+`ModuleNotFoundError`: на Windows торч бывает не отсутствующим, а сломанным
+(не подхватились DLL CUDA). Маркер `slow` оставлен только на
+`test_separates_real_audio_and_reports_timing`: порядок каналов и оба теста
+отката настоящей модели не требуют, они бьют по структурным свойствам
+(`calls == ["cpu", "cuda"]`), и именно этот класс регрессий быстрый набор
+обязан ловить.
 
 ```python
 import time
@@ -2939,10 +2951,17 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from karaoke_api.audio.probe import probe_audio
-from karaoke_api.separation.demucs_local import DemucsSeparator, _load_wav
+torch = pytest.importorskip("torch", exc_type=ImportError)
+pytest.importorskip("demucs", exc_type=ImportError)
 
-pytestmark = pytest.mark.slow
+from karaoke_api.audio.probe import probe_audio  # noqa: E402
+from karaoke_api.separation import demucs_local  # noqa: E402
+from karaoke_api.separation.demucs_local import (  # noqa: E402
+    DemucsSeparator,
+    _load_wav,
+)
+
+# Маркер slow — только на тесте с настоящей моделью, см. выше.
 
 MAX_RECONSTRUCTION_RELATIVE_ERROR = 0.05
 
@@ -2967,6 +2986,7 @@ def test_load_wav_preserves_channel_order(tmp_path):
     assert wav[1].mean().item() == pytest.approx(-0.5, abs=1e-3)
 
 
+@pytest.mark.slow
 def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     """Проверяет интеграцию и печатает фактическое время обработки.
 

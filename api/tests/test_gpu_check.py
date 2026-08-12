@@ -139,6 +139,14 @@ def test_health_endpoint_exposes_gpu(tmp_path):
         assert body["separator"] == "fake"
 
 
+def _require_gpu_stack():
+    """torch/demucs могут быть не установлены (быстрый набор обязан работать
+    и там) либо установлены сломанными — на Windows не подхватываются DLL
+    CUDA, и тогда импорт даёт ImportError при найденном пакете."""
+    pytest.importorskip("torch", exc_type=ImportError)
+    pytest.importorskip("demucs", exc_type=ImportError)
+
+
 def test_app_state_passes_gpu_verdict_to_separator(tmp_path, monkeypatch):
     """Вердикт зонда обязан доехать до сборки разделителя.
 
@@ -171,8 +179,7 @@ def test_broken_gpu_build_forces_cpu_separator():
     """На сломанной сборке is_available() возвращает True, и DemucsSeparator
     сам взял бы cuda — каждая задача падала бы на no kernel image, пока лог
     обещает CPU. Спека §6 требует продолжать на CPU по-настоящему."""
-    pytest.importorskip("torch")
-    pytest.importorskip("demucs")
+    _require_gpu_stack()
 
     separator = deps.build_separator(
         Settings(separator="demucs"),
@@ -182,8 +189,7 @@ def test_broken_gpu_build_forces_cpu_separator():
 
 
 def test_working_gpu_build_does_not_force_cpu():
-    pytest.importorskip("torch")
-    pytest.importorskip("demucs")
+    _require_gpu_stack()
     import torch
 
     separator = deps.build_separator(
@@ -195,8 +201,7 @@ def test_working_gpu_build_does_not_force_cpu():
 
 def test_unavailable_gpu_at_startup_makes_the_app_use_cpu(tmp_path, monkeypatch):
     """Сквозная проводка: лайфспан → AppState.build → устройство сепаратора."""
-    pytest.importorskip("torch")
-    pytest.importorskip("demucs")
+    _require_gpu_stack()
 
     monkeypatch.setattr(
         main, "check_gpu",

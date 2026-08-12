@@ -3,13 +3,30 @@ import time
 import numpy as np
 import pytest
 import soundfile as sf
-import torch
 
-from karaoke_api.audio.probe import probe_audio
-from karaoke_api.separation import demucs_local
-from karaoke_api.separation.demucs_local import DemucsSeparator, _load_wav
+# Импорты уровня модуля выполняются на этапе СБОРКИ, а `-m 'not slow'`
+# фильтрует уже после неё. Без этих двух строк `pytest -q` на машине без
+# gpu-группы падал бы ошибкой сбора — вопреки ограничению плана «быстрые
+# тесты не требуют GPU».
+#
+# exc_type=ImportError, а не умолчание ModuleNotFoundError: на Windows
+# торч бывает не столько отсутствующим, сколько сломанным (не подхватились
+# DLL CUDA), и тогда импорт даёт ImportError при найденном пакете. Быстрый
+# набор не должен разваливаться и в этом случае.
+torch = pytest.importorskip("torch", exc_type=ImportError)
+pytest.importorskip("demucs", exc_type=ImportError)
 
-pytestmark = pytest.mark.slow
+from karaoke_api.audio.probe import probe_audio  # noqa: E402
+from karaoke_api.separation import demucs_local  # noqa: E402
+from karaoke_api.separation.demucs_local import (  # noqa: E402
+    DemucsSeparator,
+    _load_wav,
+)
+
+# Маркер slow — только на тестах, которым нужны настоящая модель и GPU.
+# Порядок каналов и оба теста отката бьют по структурным свойствам кода
+# (calls == ["cpu", "cuda"]), модели не требуют, и именно этот класс
+# регрессий быстрый набор обязан ловить.
 
 # Относительная ошибка реконструкции (RMS разности к RMS исходного микса),
 # измеренная на настоящих прогонах этого теста на RTX 5060: 0.0097 и 0.0060
@@ -103,6 +120,7 @@ def test_oom_fallback_skipped_when_device_is_cpu(monkeypatch):
     assert fake_model.calls == []
 
 
+@pytest.mark.slow
 def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     """Проверяет интеграцию и печатает фактическое время обработки.
 
