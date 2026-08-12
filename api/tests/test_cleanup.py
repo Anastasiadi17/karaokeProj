@@ -75,10 +75,8 @@ def test_purge_continues_after_one_track_fails(wiring, monkeypatch, make_wav):
     store.create_track(other_id, "o.wav", other_key, 0.5)
 
     real_delete_prefix = storage.delete_prefix
-    calls = []
 
     def flaky_delete_prefix(prefix):
-        calls.append(prefix)
         if prefix == f"tracks/{track_id}":
             raise PermissionError("simulated: file in use")
         return real_delete_prefix(prefix)
