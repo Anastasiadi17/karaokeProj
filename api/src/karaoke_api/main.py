@@ -69,6 +69,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await task
             with contextlib.suppress(asyncio.CancelledError):
                 await cleanup_task
+            # Отмена сняла лишь ожидание to_thread — рабочий поток с
+            # текущей задачей продолжает считать. Закрыть базу под ним
+            # значит уронить его на set_stage/finish и потерять задачу
+            # в состоянии running навсегда.
+            finished = await asyncio.to_thread(
+                state.runner.wait_until_idle, settings.shutdown_wait_sec
+            )
+            if not finished:
+                log.warning(
+                    "задача не досчитала за %s с — закрываю базу, её "
+                    "результат будет потерян", settings.shutdown_wait_sec,
+                )
             state.store.close()
 
     app = FastAPI(title="Karaoke API", lifespan=lifespan)

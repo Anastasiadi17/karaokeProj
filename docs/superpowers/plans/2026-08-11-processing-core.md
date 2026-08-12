@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: ничего
-- Produces: `Settings` (pydantic BaseSettings) с полями `data_dir: Path`, `db_path: Path`, `separator: str`, `max_duration_sec: int`, `max_upload_bytes: int`, `file_ttl_hours: int`, `allowed_formats: tuple[str, ...]`; функция `get_settings() -> Settings`.
+- Produces: `Settings` (pydantic BaseSettings) с полями `data_dir: Path`, `db_path: Path`, `separator: str`, `max_duration_sec: int`, `max_upload_bytes: int`, `file_ttl_hours: int`, `allowed_formats: tuple[str, ...]`, `shutdown_wait_sec: float`; функция `get_settings() -> Settings`.
 
 - [ ] **Step 1: Проверить доступность интерпретатора и колёс PyTorch**
 
@@ -178,6 +178,14 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 104857600
     file_ttl_hours: int = 24
     allowed_formats: tuple[str, ...] = ("mp3", "wav", "m4a", "flac")
+
+    # Сколько ждать текущую задачу при выключении, прежде чем закрыть базу.
+    # Замер на RTX 5060: 30-секундный клип ≈3,5 с обработки, трек предельных
+    # max_duration_sec=600 — ≈75 с. 120 даёт запас к этому замеру, оставаясь
+    # приемлемым временем ответа на Ctrl+C. Это потолок ожидания, а не
+    # гарантия: на откате на CPU обработка длится куда дольше, и тогда
+    # выключение честно логирует, что задача не досчитана.
+    shutdown_wait_sec: float = 120.0
 
 
 @lru_cache
@@ -1318,6 +1326,7 @@ Expected: FAIL с `ModuleNotFoundError: No module named 'karaoke_api.jobs.runner
 import asyncio
 import logging
 import shutil
+import threading
 from pathlib import Path
 
 from ..separation.base import StemSeparator
@@ -1342,9 +1351,31 @@ class JobRunner:
         self._work_dir = Path(work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._stopped = False
+        # Взведено, пока рабочий поток ничего не считает. Нужно при
+        # выключении: см. wait_until_idle.
+        self._idle = threading.Event()
+        self._idle.set()
 
     def run_once(self) -> bool:
         """Обработать одну задачу. False — очередь пуста."""
+        self._idle.clear()
+        try:
+            return self._run_claimed()
+        finally:
+            self._idle.set()
+
+    def wait_until_idle(self, timeout: float) -> bool:
+        """Дождаться, пока текущая задача досчитает. False — не дождались.
+
+        Обязательна перед закрытием базы при выключении. task.cancel() на
+        run_forever снимает только ожидание asyncio.to_thread — сам рабочий
+        поток продолжает считать. Если закрыть под ним соединение, он упадёт
+        на первом же set_stage/finish, а исключение уйдёт в брошенный future
+        и потеряется молча, оставив задачу навсегда в running.
+        """
+        return self._idle.wait(timeout)
+
+    def _run_claimed(self) -> bool:
         job = self._store.claim_next()
         if job is None:
             return False
@@ -1372,7 +1403,14 @@ class JobRunner:
             self._store.finish(job.id, {"stems": stems})
         except Exception as exc:
             log.exception("задача %s упала", job.id)
-            self._store.fail(job.id, f"{type(exc).__name__}: {exc}")
+            try:
+                self._store.fail(job.id, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                # Запись отказа сама может не пройти (закрытое соединение,
+                # удалённая строка задачи). Тогда исходное исключение уже
+                # залогировано, и терять run_once из-за этого нельзя:
+                # наружу оно уходит в брошенный future и пропадает молча.
+                log.exception("не удалось пометить задачу %s упавшей", job.id)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
@@ -1622,6 +1660,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # закроется раньше, чем воркер домотает свой путь размотки.
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+            # Но и await недостаточно: отмена снимает лишь ожидание
+            # asyncio.to_thread, рабочий поток с текущей задачей продолжает
+            # считать. Закрыть базу под ним значит уронить его на
+            # set_stage/finish и оставить задачу в running навсегда.
+            finished = await asyncio.to_thread(
+                state.runner.wait_until_idle, settings.shutdown_wait_sec
+            )
+            if not finished:
+                log.warning(
+                    "задача не досчитала за %s с — закрываю базу, её "
+                    "результат будет потерян", settings.shutdown_wait_sec,
+                )
             state.store.close()
 
     app = FastAPI(title="Karaoke API", lifespan=lifespan)

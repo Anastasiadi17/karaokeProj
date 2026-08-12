@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from karaoke_api.jobs.models import JobStatus
@@ -77,6 +79,42 @@ def test_work_dir_is_cleaned_after_job(wiring):
     JobRunner(store, storage, FakeSeparator(), work).run_once()
 
     assert list(work.iterdir()) == []
+
+
+def test_failure_to_record_failure_does_not_escape_run_once(wiring, monkeypatch):
+    """store.fail() внутри except сам не защищён — а именно он падает, когда
+    базу закрыли под работающим потоком. Исключение из него уходит в
+    брошенный future и теряется молча."""
+    store, storage, work, track_id = wiring
+    store.create_job(track_id)
+
+    def exploding_fail(job_id, message):
+        raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+
+    monkeypatch.setattr(store, "fail", exploding_fail)
+
+    runner = JobRunner(store, storage, ExplodingSeparator(), work)
+    assert runner.run_once() is True
+
+
+def test_runner_reports_idle_only_after_job_finishes(wiring):
+    """wait_until_idle обязан быть ложью, пока задача считается, и правдой
+    после — иначе выключение не на что опереться."""
+    store, storage, work, track_id = wiring
+    store.create_job(track_id)
+
+    seen_during_job = []
+
+    class WatchingSeparator:
+        def separate(self, source, out_dir, on_progress):
+            seen_during_job.append(runner.wait_until_idle(0))
+            return FakeSeparator().separate(source, out_dir, on_progress)
+
+    runner = JobRunner(store, storage, WatchingSeparator(), work)
+    assert runner.run_once() is True
+
+    assert seen_during_job == [False]
+    assert runner.wait_until_idle(0) is True
 
 
 def test_scratch_dir_creation_failure_marks_job_failed(wiring):

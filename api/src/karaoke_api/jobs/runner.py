@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import shutil
+import threading
 from pathlib import Path
 
 from ..separation.base import StemSeparator
@@ -25,9 +26,31 @@ class JobRunner:
         self._work_dir = Path(work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._stopped = False
+        # Взведено, пока рабочий поток ничего не считает. Нужно при
+        # выключении: см. wait_until_idle.
+        self._idle = threading.Event()
+        self._idle.set()
 
     def run_once(self) -> bool:
         """Обработать одну задачу. False — очередь пуста."""
+        self._idle.clear()
+        try:
+            return self._run_claimed()
+        finally:
+            self._idle.set()
+
+    def wait_until_idle(self, timeout: float) -> bool:
+        """Дождаться, пока текущая задача досчитает. False — не дождались.
+
+        Обязательна перед закрытием базы при выключении. task.cancel() на
+        run_forever снимает только ожидание asyncio.to_thread — сам рабочий
+        поток продолжает считать. Если закрыть под ним соединение, он упадёт
+        на первом же set_stage/finish, а исключение уйдёт в брошенный future
+        и потеряется молча, оставив задачу навсегда в running.
+        """
+        return self._idle.wait(timeout)
+
+    def _run_claimed(self) -> bool:
         job = self._store.claim_next()
         if job is None:
             return False
@@ -53,7 +76,14 @@ class JobRunner:
             self._store.finish(job.id, {"stems": stems})
         except Exception as exc:
             log.exception("задача %s упала", job.id)
-            self._store.fail(job.id, f"{type(exc).__name__}: {exc}")
+            try:
+                self._store.fail(job.id, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                # Запись отказа сама может не пройти (закрытое соединение,
+                # удалённая строка задачи). Тогда исходное исключение уже
+                # залогировано, и терять run_once из-за этого нельзя:
+                # наружу оно уходит в брошенный future и пропадает молча.
+                log.exception("не удалось пометить задачу %s упавшей", job.id)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
 
