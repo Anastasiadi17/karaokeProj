@@ -82,6 +82,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job_id = state.store.create_job(track_id)
         return {"track_id": track_id, "job_id": job_id}
 
+    @app.get("/api/jobs/{job_id}")
+    async def get_job(request: Request, job_id: str):
+        state: AppState = request.app.state.karaoke
+        job = state.store.get_job(job_id)
+        if job is None:
+            return _error("not_found", status=404)
+        return {
+            "status": job.status.value,
+            "stage": job.stage.value if job.stage else None,
+            "progress": job.progress,
+            "error": job.error_message,
+            "result": job.result,
+        }
+
     return app
 
 
