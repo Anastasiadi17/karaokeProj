@@ -1471,7 +1471,7 @@ def test_extension_does_not_grant_access(client, make_wav, tmp_path):
     assert _upload(client, fake).json()["error"] == "unsupported_format"
 
 
-def test_readable_but_disallowed_format_is_rejected(client, tmp_path):
+def test_rejects_allowed_but_unlisted_format(client, tmp_path):
     """OGG читается soundfile, но в allowed_formats его нет."""
     import numpy as np
     import soundfile as sf
@@ -1484,7 +1484,7 @@ def test_readable_but_disallowed_format_is_rejected(client, tmp_path):
     assert response.json()["error"] == "unsupported_format"
 
 
-def test_filename_cannot_escape_staging_directory(client, make_wav, tmp_path):
+def test_filename_traversal_is_contained(client, make_wav, tmp_path):
     """Имя из multipart не должно участвовать в построении пути записи."""
     escaped = tmp_path.parent / "evil.wav"
     if escaped.exists():
@@ -1495,6 +1495,7 @@ def test_filename_cannot_escape_staging_directory(client, make_wav, tmp_path):
 
     assert response.status_code == 201
     assert not escaped.exists()
+    assert not list(tmp_path.parent.rglob("evil.wav"))
 ```
 
 Последние два теста закрывают границу безопасности загрузки: читаемость файла —
@@ -1624,14 +1625,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except UnsupportedAudio:
                 return _error("unsupported_format")
 
+            if info.duration_sec > limits.max_duration_sec:
+                return _error("too_long")
+
             if info.format not in limits.allowed_formats:
                 # soundfile читает два десятка форматов сверх нашего списка
                 # (OGG, AIFF, CAF...). Читаемость — не то же самое, что
                 # разрешённость.
                 return _error("unsupported_format")
-
-            if info.duration_sec > limits.max_duration_sec:
-                return _error("too_long")
 
             # Идентификатор выдаётся до вставки: ключ строится из него, и
             # запись попадает в базу сразу целиком.
