@@ -57,6 +57,15 @@ class LocalStorage:
         except ValueError:
             return False
 
+    def list_prefixes(self, prefix: str) -> list[str]:
+        try:
+            target = self._resolve(prefix)
+        except ValueError:
+            return []
+        if not target.is_dir():
+            return []
+        return sorted(p.name for p in target.iterdir() if p.is_dir())
+
     def delete_prefix(self, prefix: str) -> None:
         target = self._resolve(prefix)
         if target.is_dir():

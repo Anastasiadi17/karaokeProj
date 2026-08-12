@@ -32,3 +32,32 @@ def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
     if removed:
         log.info("автоочистка удалила треков: %d", removed)
     return removed
+
+
+def purge_orphan_track_dirs(store: JobStore, storage: Storage) -> int:
+    """Удалить файлы треков, которых нет в базе. Возвращает число удалённых.
+
+    Такой каталог не увидит уже никто: list_expired_tracks ходит по строкам
+    таблицы tracks, DELETE — тоже. Появляется он, когда трек удалили, пока
+    задача считалась: воркер дописывал стемы после DELETE и заново создавал
+    каталог. Прямую гонку закрывает проверка в JobRunner, а эта сверка на
+    старте — сеть под ней и под файлами, осиротевшими при падении процесса.
+
+    Ошибка на одном каталоге не обрывает сверку: на Windows занятый файл —
+    штатный сценарий.
+    """
+    removed = 0
+    for track_id in storage.list_prefixes("tracks"):
+        if store.get_track(track_id) is not None:
+            continue
+        try:
+            storage.delete_prefix(f"tracks/{track_id}")
+        except Exception:
+            log.exception("не удалось удалить осиротевшие файлы трека %s",
+                          track_id)
+            continue
+        removed += 1
+
+    if removed:
+        log.warning("удалено осиротевших каталогов треков: %d", removed)
+    return removed

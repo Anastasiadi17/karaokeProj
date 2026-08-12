@@ -35,6 +35,14 @@ class Storage(Protocol):
 
     def exists(self, key: str) -> bool: ...
 
+    def list_prefixes(self, prefix: str) -> list[str]:
+        """Непосредственные подпрефиксы под prefix.
+
+        Для "tracks" — идентификаторы всех треков, у которых есть файлы.
+        В объектном хранилище это ListObjects с delimiter="/".
+        """
+        ...
+
     def delete_prefix(self, prefix: str) -> None:
         """Удалить все ключи, начинающиеся с prefix."""
         ...

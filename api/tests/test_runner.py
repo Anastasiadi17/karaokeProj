@@ -81,6 +81,30 @@ def test_work_dir_is_cleaned_after_job(wiring):
     assert list(work.iterdir()) == []
 
 
+def test_stems_are_not_written_for_track_deleted_mid_job(wiring):
+    """DELETE прилетел, пока задача считалась.
+
+    Записать стемы после этого — значит заново создать каталог трека,
+    которого нет в базе: его не увидит ни list_expired_tracks, ни DELETE.
+    Файлы остались бы на диске навсегда и навсегда скачиваемыми.
+    """
+    store, storage, work, track_id = wiring
+    store.create_job(track_id)
+
+    class DeletingSeparator:
+        def separate(self, source, out_dir, on_progress):
+            storage.delete_prefix(f"tracks/{track_id}")
+            store.delete_track(track_id)
+            return FakeSeparator().separate(source, out_dir, on_progress)
+
+    runner = JobRunner(store, storage, DeletingSeparator(), work)
+    assert runner.run_once() is True
+
+    assert not storage.exists(f"tracks/{track_id}/stems/vocals.wav")
+    assert not storage.exists(f"tracks/{track_id}/stems/no_vocals.wav")
+    assert storage.list_prefixes("tracks") == []
+
+
 def test_failure_to_record_failure_does_not_escape_run_once(wiring, monkeypatch):
     """store.fail() внутри except сам не защищён — а именно он падает, когда
     базу закрыли под работающим потоком. Исключение из него уходит в

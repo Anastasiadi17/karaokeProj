@@ -1,6 +1,3 @@
-import threading
-import time
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,38 +6,19 @@ from karaoke_api.config import Settings
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.store import JobStore
 from karaoke_api.main import create_app
-from karaoke_api.separation.fake import FakeSeparator
-
-
-class SlowSeparator:
-    """Считает заметно дольше, чем занимает выключение приложения.
-
-    FakeSeparator укладывается в микросекунды, поэтому окно «выключение
-    попало в работающую задачу» на нём не воспроизвести. С настоящим
-    demucs окно длится десятки секунд, то есть штатный Ctrl+C попадает
-    в него почти всегда.
-    """
-
-    def __init__(self, delay: float = 1.0) -> None:
-        self._delay = delay
-        self.started = threading.Event()
-
-    def separate(self, source, out_dir, on_progress):
-        self.started.set()
-        time.sleep(self._delay)
-        return FakeSeparator().separate(source, out_dir, on_progress)
 
 
 @pytest.fixture
-def slow_app(tmp_path, monkeypatch):
+def slow_app(tmp_path, monkeypatch, slow_separator):
     settings = Settings(
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
     )
-    separator = SlowSeparator(delay=1.0)
-    monkeypatch.setattr(deps, "build_separator", lambda s, gpu=None: separator)
-    return settings, separator
+    monkeypatch.setattr(
+        deps, "build_separator", lambda s, gpu=None: slow_separator
+    )
+    return settings, slow_separator
 
 
 def test_shutdown_waits_for_running_job(slow_app, make_wav):

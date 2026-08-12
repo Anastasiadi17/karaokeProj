@@ -66,6 +66,16 @@ class JobRunner:
 
             result = self._separator.separate(source, scratch, on_progress)
 
+            if self._store.get_track(job.track_id) is None:
+                # Трек удалили, пока задача считалась (DELETE или автоочистка
+                # по TTL). Записать стемы сейчас — значит заново создать
+                # каталог трека, которого нет в базе: его не увидит ни
+                # list_expired_tracks, ни DELETE, и файлы останутся навсегда.
+                # Строки задачи тоже уже нет, помечать нечего.
+                log.info("трек %s удалён во время обработки, стемы не пишем",
+                         job.track_id)
+                return True
+
             stems = {}
             for name, path in (("vocals", result.vocals),
                                ("no_vocals", result.no_vocals)):

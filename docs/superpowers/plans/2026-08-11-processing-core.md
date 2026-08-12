@@ -231,7 +231,7 @@ git commit -m "feat(api): каркас проекта и конфигураци�
 
 **Interfaces:**
 - Consumes: `Settings` из Task 1
-- Produces: протокол `Storage` с методами `store_file(key: str, src: Path) -> None`, `materialize(key: str, dest_dir: Path) -> Path`, `read_range(key: str, start: int, length: int) -> bytes`, `iter_range(key: str, start: int, length: int, chunk_size: int = 65536) -> Iterator[bytes]`, `size(key: str) -> int`, `exists(key: str) -> bool`, `delete_prefix(prefix: str) -> None`; класс `LocalStorage(root: Path)`.
+- Produces: протокол `Storage` с методами `store_file(key: str, src: Path) -> None`, `materialize(key: str, dest_dir: Path) -> Path`, `read_range(key: str, start: int, length: int) -> bytes`, `iter_range(key: str, start: int, length: int, chunk_size: int = 65536) -> Iterator[bytes]`, `size(key: str) -> int`, `exists(key: str) -> bool`, `list_prefixes(prefix: str) -> list[str]`, `delete_prefix(prefix: str) -> None`; класс `LocalStorage(root: Path)`.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -379,6 +379,14 @@ class Storage(Protocol):
 
     def exists(self, key: str) -> bool: ...
 
+    def list_prefixes(self, prefix: str) -> list[str]:
+        """Непосредственные подпрефиксы под prefix.
+
+        Для "tracks" — идентификаторы всех треков, у которых есть файлы.
+        В объектном хранилище это ListObjects с delimiter="/".
+        """
+        ...
+
     def delete_prefix(self, prefix: str) -> None:
         """Удалить все ключи, начинающиеся с prefix."""
         ...
@@ -450,6 +458,15 @@ class LocalStorage:
             return self._resolve(key).is_file()
         except ValueError:
             return False
+
+    def list_prefixes(self, prefix: str) -> list[str]:
+        try:
+            target = self._resolve(prefix)
+        except ValueError:
+            return []
+        if not target.is_dir():
+            return []
+        return sorted(p.name for p in target.iterdir() if p.is_dir())
 
     def delete_prefix(self, prefix: str) -> None:
         # Ошибки удаления не глушим: молча провалившаяся уборка по TTL
@@ -1393,6 +1410,16 @@ class JobRunner:
 
             result = self._separator.separate(source, scratch, on_progress)
 
+            if self._store.get_track(job.track_id) is None:
+                # Трек удалили, пока задача считалась (DELETE или автоочистка
+                # по TTL). Записать стемы сейчас — значит заново создать
+                # каталог трека, которого нет в базе: его не увидит ни
+                # list_expired_tracks, ни DELETE, и файлы останутся навсегда.
+                # Строки задачи тоже уже нет, помечать нечего.
+                log.info("трек %s удалён во время обработки, стемы не пишем",
+                         job.track_id)
+                return True
+
             stems = {}
             for name, path in (("vocals", result.vocals),
                                ("no_vocals", result.no_vocals)):
@@ -2260,11 +2287,40 @@ def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
     if removed:
         log.info("автоочистка удалила треков: %d", removed)
     return removed
+
+
+def purge_orphan_track_dirs(store: JobStore, storage: Storage) -> int:
+    """Удалить файлы треков, которых нет в базе. Возвращает число удалённых.
+
+    Такой каталог не увидит уже никто: list_expired_tracks ходит по строкам
+    таблицы tracks, DELETE — тоже. Появляется он, когда трек удалили, пока
+    задача считалась: воркер дописывал стемы после DELETE и заново создавал
+    каталог. Прямую гонку закрывает проверка в JobRunner, а эта сверка на
+    старте — сеть под ней и под файлами, осиротевшими при падении процесса.
+
+    Ошибка на одном каталоге не обрывает сверку: на Windows занятый файл —
+    штатный сценарий.
+    """
+    removed = 0
+    for track_id in storage.list_prefixes("tracks"):
+        if store.get_track(track_id) is not None:
+            continue
+        try:
+            storage.delete_prefix(f"tracks/{track_id}")
+        except Exception:
+            log.exception("не удалось удалить осиротевшие файлы трека %s",
+                          track_id)
+            continue
+        removed += 1
+
+    if removed:
+        log.warning("удалено осиротевших каталогов треков: %d", removed)
+    return removed
 ```
 
 - [ ] **Step 4: Добавить эндпоинт и периодическую уборку**
 
-В `api/src/karaoke_api/main.py` добавить импорт `from .cleanup import purge_expired` и вставить перед `return app`:
+В `api/src/karaoke_api/main.py` добавить импорт `from .cleanup import purge_expired, purge_orphan_track_dirs` и вставить перед `return app`:
 
 ```python
     @app.delete("/api/tracks/{track_id}", status_code=204)
@@ -2281,6 +2337,9 @@ def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
 
 ```python
         purge_expired(state.store, state.storage, settings.file_ttl_hours)
+        # Сверка каталогов с таблицей: файлы трека, чью строку уже удалили,
+        # не увидит больше ни одна уборка.
+        purge_orphan_track_dirs(state.store, state.storage)
 
         async def _cleanup_loop() -> None:
             while True:

@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .audio.probe import UnsupportedAudio, probe_audio
-from .cleanup import purge_expired
+from .cleanup import purge_expired, purge_orphan_track_dirs
 from .config import Settings, get_settings
 from .deps import AppState
 from .gpu import check_gpu
@@ -36,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("помечено упавшими незавершённых задач: %d", orphans)
 
         purge_expired(state.store, state.storage, settings.file_ttl_hours)
+        purge_orphan_track_dirs(state.store, state.storage)
 
         gpu = check_gpu()
         app.state.gpu = gpu
