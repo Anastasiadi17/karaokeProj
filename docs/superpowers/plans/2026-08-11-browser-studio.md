@@ -1908,7 +1908,7 @@ const MESSAGES: Record<string, string> = {
   unsupported_format: "Формат не поддерживается. Нужен mp3, wav или flac — " +
     "m4a конвертируйте в один из них.",
   too_long: "Трек длиннее 10 минут.",
-  too_large: "Файл больше 100 МБ.",
+  too_large: "Файл больше 200 МБ.",
 };
 
 export function UploadScreen({

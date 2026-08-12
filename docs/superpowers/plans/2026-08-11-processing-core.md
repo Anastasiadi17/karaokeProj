@@ -13,7 +13,7 @@
 - **Интерпретатор: Python 3.12.** В системе стоит 3.14.2, но колёса PyTorch для 3.14 могут отсутствовать. Задача 1 проверяет это явно и откатывается на 3.12.
 - **PyTorch только со сборкой под CUDA 12.8 или новее.** GPU — RTX 5060, архитектура Blackwell, compute capability 12.0 (sm_120). Обычный `pip install torch` ставит несовместимую сборку.
 - **Все пути к данным берутся из `Settings`,** ни один путь не пишется в коде напрямую.
-- **Лимиты загрузки:** форматы mp3/wav/flac (m4a исключён — libsndfile его не читает), длительность до 600 с, размер до 104857600 байт, TTL файлов 24 ч.
+- **Лимиты загрузки:** форматы mp3/wav/flac (m4a исключён — libsndfile его не читает), длительность до 600 с, размер до 209715200 байт (200 МиБ), TTL файлов 24 ч.
 - **Формат определяется разбором содержимого,** а не расширением файла.
 - **Быстрые тесты не требуют GPU и не вызывают настоящий demucs.** Реальная модель — только в тестах с маркером `slow`.
 - Рабочая директория для всех команд: `api/`.
@@ -124,7 +124,7 @@ from karaoke_api.config import Settings
 def test_defaults_match_spec():
     s = Settings()
     assert s.max_duration_sec == 600
-    assert s.max_upload_bytes == 104857600
+    assert s.max_upload_bytes == 209715200
     assert s.file_ttl_hours == 24
     assert s.allowed_formats == ("mp3", "wav", "flac")
     assert s.separator == "demucs"
@@ -175,7 +175,7 @@ class Settings(BaseSettings):
     separator: str = "demucs"
 
     max_duration_sec: int = 600
-    max_upload_bytes: int = 104857600
+    max_upload_bytes: int = 209715200
     file_ttl_hours: int = 24
     allowed_formats: tuple[str, ...] = ("mp3", "wav", "flac")
 
@@ -209,7 +209,7 @@ KARAOKE_DATA_DIR=data
 KARAOKE_DB_PATH=data/karaoke.db
 KARAOKE_SEPARATOR=demucs
 KARAOKE_MAX_DURATION_SEC=600
-KARAOKE_MAX_UPLOAD_BYTES=104857600
+KARAOKE_MAX_UPLOAD_BYTES=209715200
 KARAOKE_FILE_TTL_HOURS=24
 ```
 
