@@ -20,7 +20,10 @@ class Settings(BaseSettings):
     max_duration_sec: int = 600
     max_upload_bytes: int = 104857600
     file_ttl_hours: int = 24
-    allowed_formats: tuple[str, ...] = ("mp3", "wav", "m4a", "flac")
+    # m4a исключён: libsndfile (через soundfile) его не читает —
+    # sf.available_formats() отдаёт MP3, но не M4A/AAC/MP4. Обещать формат,
+    # который тут же отвергается как нечитаемый, хуже, чем не обещать вовсе.
+    allowed_formats: tuple[str, ...] = ("mp3", "wav", "flac")
 
     # Сколько ждать текущую задачу при выключении, прежде чем закрыть базу.
     # Замер на RTX 5060 на предельной длительности: трек в

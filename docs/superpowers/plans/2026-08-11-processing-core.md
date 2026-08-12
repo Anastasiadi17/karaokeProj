@@ -13,7 +13,7 @@
 - **Интерпретатор: Python 3.12.** В системе стоит 3.14.2, но колёса PyTorch для 3.14 могут отсутствовать. Задача 1 проверяет это явно и откатывается на 3.12.
 - **PyTorch только со сборкой под CUDA 12.8 или новее.** GPU — RTX 5060, архитектура Blackwell, compute capability 12.0 (sm_120). Обычный `pip install torch` ставит несовместимую сборку.
 - **Все пути к данным берутся из `Settings`,** ни один путь не пишется в коде напрямую.
-- **Лимиты загрузки:** форматы mp3/wav/m4a/flac, длительность до 600 с, размер до 104857600 байт, TTL файлов 24 ч.
+- **Лимиты загрузки:** форматы mp3/wav/flac (m4a исключён — libsndfile его не читает), длительность до 600 с, размер до 104857600 байт, TTL файлов 24 ч.
 - **Формат определяется разбором содержимого,** а не расширением файла.
 - **Быстрые тесты не требуют GPU и не вызывают настоящий demucs.** Реальная модель — только в тестах с маркером `slow`.
 - Рабочая директория для всех команд: `api/`.
@@ -126,7 +126,7 @@ def test_defaults_match_spec():
     assert s.max_duration_sec == 600
     assert s.max_upload_bytes == 104857600
     assert s.file_ttl_hours == 24
-    assert s.allowed_formats == ("mp3", "wav", "m4a", "flac")
+    assert s.allowed_formats == ("mp3", "wav", "flac")
     assert s.separator == "demucs"
 
 
@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     max_duration_sec: int = 600
     max_upload_bytes: int = 104857600
     file_ttl_hours: int = 24
-    allowed_formats: tuple[str, ...] = ("mp3", "wav", "m4a", "flac")
+    allowed_formats: tuple[str, ...] = ("mp3", "wav", "flac")
 
     # Сколько ждать текущую задачу при выключении, прежде чем закрыть базу.
     # Замер на RTX 5060 на предельной длительности: трек в

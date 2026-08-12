@@ -8,7 +8,7 @@ def test_defaults_match_spec():
     assert s.max_duration_sec == 600
     assert s.max_upload_bytes == 104857600
     assert s.file_ttl_hours == 24
-    assert s.allowed_formats == ("mp3", "wav", "m4a", "flac")
+    assert s.allowed_formats == ("mp3", "wav", "flac")
     assert s.separator == "demucs"
 
 

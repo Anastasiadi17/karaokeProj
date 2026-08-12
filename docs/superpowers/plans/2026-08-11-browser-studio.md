@@ -1905,7 +1905,8 @@ import type { ApiClient } from "../../api/client";
 import type { UploadResult } from "../../api/types";
 
 const MESSAGES: Record<string, string> = {
-  unsupported_format: "Файл не похож на аудио. Нужен mp3, wav, m4a или flac.",
+  unsupported_format: "Формат не поддерживается. Нужен mp3, wav или flac — " +
+    "m4a конвертируйте в один из них.",
   too_long: "Трек длиннее 10 минут.",
   too_large: "Файл больше 100 МБ.",
 };

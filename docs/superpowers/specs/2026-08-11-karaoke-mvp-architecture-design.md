@@ -180,24 +180,36 @@ karaokeProj/
 
 | Параметр | Значение |
 |---|---|
-| Форматы | mp3, wav, m4a, flac |
+| Форматы | mp3, wav, flac |
 | Максимальная длительность | 10 мин |
 | Максимальный размер | 100 МБ |
 | TTL файлов в `data/` | 24 ч |
 
 Формат определяется разбором содержимого, а не расширением файла.
 
+m4a в списке нет: декодер (`soundfile`/libsndfile) его не читает —
+`sf.available_formats()` MP3 отдаёт, а M4A/AAC/MP4 нет. Обещать формат,
+который тут же отвергается как нечитаемый, хуже, чем не обещать вовсе;
+ffmpeg или отдельный декодер под него не подключаем.
+
 ### Эндпоинты
 
 ```
 POST   /api/tracks                    → 201 {track_id, job_id}
                                       → 400 unsupported_format | too_long | too_large
+                                      → 413 too_large (Content-Length больше лимита, до разбора формы)
 GET    /api/jobs/{job_id}             → 200 {status, stage, progress, error?, result?}
+                                         result: {stems: {vocals, no_vocals}, degraded}
 GET    /api/tracks/{id}/stems/{kind}  → 200 audio/wav, Range обязателен
 DELETE /api/tracks/{id}               → 204
+                                      → 503 delete_failed (файл занят другим процессом, штатно на Windows)
 ```
 
 Range-запросы обязательны: без них браузер не перематывает длинный WAV.
+
+413 отдаёт ASGI-мидлварь, отвергающая тело по заголовку `Content-Length` ещё
+до того, как FastAPI начнёт разбирать форму. Обычный путь превышения лимита
+во время самой загрузки по-прежнему отвечает 400 `too_large`.
 
 ---
 
