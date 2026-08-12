@@ -92,7 +92,18 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 markers = ["slow: требует GPU и настоящую модель demucs"]
 addopts = "-m 'not slow'"
+filterwarnings = [
+    "error",
+    # Стороннее предупреждение из starlette.testclient, наш код его не вызывает.
+    # Категория именно StarletteDeprecationWarning: она наследует UserWarning,
+    # а не DeprecationWarning, поэтому обычная категория не совпала бы.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
 ```
+
+`"error"` первым пунктом превращает любое другое предупреждение в падение —
+именно это удерживает вывод честным. Точечный ignore задан и по тексту, и по
+категории, чтобы не глушить ничего постороннего.
 
 - [ ] **Step 4: Установить зависимости**
 
@@ -967,6 +978,7 @@ class Job:
 ```python
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1013,11 +1025,23 @@ def new_id() -> str:
 
 
 class JobStore:
-    """Треки и задачи в SQLite. Одно соединение, сериализованный доступ."""
+    """Треки и задачи в SQLite. Одно соединение, сериализованный доступ.
+
+    ВАЖНО: каждый публичный метод, обращающийся к self._conn, обязан обернуть
+    весь свой доступ в `with self._lock:`. check_same_thread=False отключает не
+    опасность, а предупреждение о ней: воркер пишет из рабочего потока, а
+    эндпоинт статуса читает из потока событийного цикла, и без сериализации
+    выборка строки затирается на лету (наблюдалось: status приходил None из
+    колонки NOT NULL).
+
+    Замок реентрантный, потому что claim_next вызывает get_job уже под ним.
+    В claim_next SELECT и UPDATE обязаны выполняться под одним захватом.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
