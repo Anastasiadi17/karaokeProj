@@ -2402,11 +2402,18 @@ class GpuStatus:
 
 
 def check_gpu() -> GpuStatus:
-    """Проверить GPU настоящим тензором, а не только is_available().
+    """Проверить GPU настоящим вычислением, а не только is_available().
 
     is_available() возвращает True и на несовместимой сборке — ошибка
-    вылезает лишь при первом вычислении. Ловим её здесь, при старте,
-    а не на первой задаче пользователя.
+    вылезает лишь при первом вычислении. zeros() тоже не годится: заполнение
+    нулями свежего тензора реализовано через cudaMemsetAsync — операцию
+    уровня драйвера, которая пройдёт и без ядер под нашу архитектуру. Нужна
+    настоящая арифметика, а .item() ещё и синхронизирует: без него
+    асинхронная ошибка запуска ядра может не всплыть на месте вызова.
+
+    Всё тело после импорта обёрнуто в try — сломанный драйвер способен
+    уронить даже is_available(), а по контракту задачи проверка не должна
+    валить старт приложения ни при каких обстоятельствах.
     """
     try:
         torch = importlib.import_module("torch")
@@ -2414,19 +2421,29 @@ def check_gpu() -> GpuStatus:
         return GpuStatus(False, reason=f"torch не импортируется: {exc}",
                          hint=CU128_HINT)
 
-    if torch is None:
-        return GpuStatus(False, reason="torch не установлен", hint=CU128_HINT)
-
-    if not torch.cuda.is_available():
-        return GpuStatus(False, reason="CUDA недоступна", hint=CU128_HINT)
-
     try:
-        torch.zeros(8, device="cuda")
-    except Exception as exc:
-        return GpuStatus(False, reason=f"пробное вычисление упало: {exc}",
-                         hint=CU128_HINT)
+        if not torch.cuda.is_available():
+            return GpuStatus(False, reason="CUDA недоступна", hint=NO_GPU_HINT)
 
-    return GpuStatus(True, device_name=torch.cuda.get_device_name(0))
+        probe = (torch.ones(8, device="cuda") * 2).sum().item()
+        if probe != 16:
+            return GpuStatus(
+                False,
+                reason=f"пробное вычисление дало {probe}, ожидалось 16",
+                hint=CU128_HINT,
+            )
+
+        try:
+            device_name = torch.cuda.get_device_name(0)
+        except Exception:
+            # Само вычисление сработало — GPU реально доступен. Не проваливать
+            # весь проб из-за того, что не удалось узнать только имя устройства.
+            device_name = None
+
+        return GpuStatus(True, device_name=device_name)
+    except Exception as exc:
+        return GpuStatus(False, reason=f"проверка GPU упала: {exc}",
+                         hint=CU128_HINT)
 ```
 
 - [ ] **Step 4: Подключить в приложение**
