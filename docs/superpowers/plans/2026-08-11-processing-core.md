@@ -2545,6 +2545,18 @@ gpu = ["torch>=2.7", "torchaudio>=2.7", "demucs>=4.0.1"]
 остаются без изменений — это чистые тензорные операции и запись `.wav`
 собственным кодом demucs, кодеков не касаются.
 
+**Второй круг ревью (та же задача 12) добавил ещё два отступления,
+предписанных планом изначально (тот же пробел был и в коде брифа), плюс одно
+чисто структурное — синхронизирую их сюда же:**
+- вход с числом каналов больше двух (например, 5.1 во flac) не был обработан
+  — `apply_model` падал бы по форме тензора; добавлено сведение в моно перед
+  дублированием в стерео;
+- откат на CPU при нехватке видеопамяти не восстанавливал устройство модели
+  в `finally` (терялось при отказе и самого CPU-прохода) и был формально
+  достижим при `self.device == "cpu"`, где восстанавливать нечего — вынесено
+  в отдельный метод `_apply_with_fallback` с `try/finally` и явным пропуском
+  ветки отката вне CUDA.
+
 ```python
 import logging
 from pathlib import Path
@@ -2587,12 +2599,45 @@ class DemucsSeparator:
             self._model = get_model(self._model_name).to(self.device).eval()
         return self._model
 
+    def _apply_with_fallback(self, model, wav: torch.Tensor) -> torch.Tensor:
+        """Прогнать модель, на нехватке видеопамяти — откатиться на CPU.
+
+        При self.device != "cuda" ветку отката пропускаем явно: откатываться
+        уже некуда, а OutOfMemoryError там взяться неоткуда. Восстановление
+        устройства модели — в finally: если сорвётся и сам CPU-проход,
+        self._model не должен навсегда осесть на CPU, пока self.device
+        продолжает утверждать "cuda".
+        """
+        if self.device != "cuda":
+            with torch.no_grad():
+                return apply_model(model, wav[None], device=self.device,
+                                   progress=False)[0]
+        try:
+            with torch.no_grad():
+                return apply_model(model, wav[None], device=self.device,
+                                   progress=False)[0]
+        except torch.cuda.OutOfMemoryError as exc:
+            log.warning("нехватка видеопамяти, повторяю на CPU: %s", exc)
+            torch.cuda.empty_cache()
+            model.to("cpu")
+            try:
+                with torch.no_grad():
+                    return apply_model(model, wav[None], device="cpu",
+                                       progress=False)[0]
+            finally:
+                model.to(self.device)
+
     def separate(self, source: Path, out_dir: Path,
                  on_progress: ProgressCallback) -> SeparationResult:
         on_progress("loading", 0.0)
         model = self._ensure_model()
 
         wav, sample_rate = _load_wav(source)
+        if wav.shape[0] > 2:
+            # Больше двух каналов (например, 5.1 в flac) — demucs/apply_model
+            # ждёт ровно audio_channels (2 для htdemucs) и упадёт по форме
+            # тензора. Сводим в моно и дублируем, как и одноканальный вход.
+            wav = wav.mean(0, keepdim=True)
         if wav.shape[0] == 1:
             wav = wav.repeat(2, 1)
         if sample_rate != model.samplerate:
@@ -2603,19 +2648,7 @@ class DemucsSeparator:
         wav = (wav - reference.mean()) / (reference.std() + 1e-8)
 
         on_progress("separating", 0.1)
-        try:
-            with torch.no_grad():
-                sources = apply_model(
-                    model, wav[None], device=self.device, progress=False
-                )[0]
-        except torch.cuda.OutOfMemoryError as exc:
-            log.warning("нехватка видеопамяти, повторяю на CPU: %s", exc)
-            torch.cuda.empty_cache()
-            with torch.no_grad():
-                sources = apply_model(
-                    model.to("cpu"), wav[None], device="cpu", progress=False
-                )[0]
-            model.to(self.device)
+        sources = self._apply_with_fallback(model, wav)
 
         sources = sources * (reference.std() + 1e-8) + reference.mean()
         stems = dict(zip(model.sources, sources))
@@ -2644,15 +2677,59 @@ class DemucsSeparator:
 
 Создать `api/tests/test_demucs_slow.py`:
 
+**Второй круг ревью задачи 12 указал, что исходный тест ниже проверял только
+факт существования файлов, длительность и число каналов — ни одно из этих
+утверждений не ловит сломанную денормировку, потерянную транспозицию или
+перепутанный порядок каналов: на выходе всё равно получился бы 30-секундный
+стерео-WAV. Усилено тремя проверками и отдельным тестом:**
+- `separator.device == "cuda"` в начале — маркер `slow` заявляет GPU, тест не
+  должен молча превращаться в CPU-замер, который легко прочитать как
+  GPU-число;
+- `sample_rate == 44100` на обеих выходных дорожках и явная проверка, что
+  `vocals` и `no_vocals` не побитово идентичны;
+- инвариант реконструкции: `vocals + no_vocals` — это сумма всех четырёх
+  источников htdemucs и должна приближённо восстанавливать исходный микс.
+  Относительная ошибка (RMS разности к RMS микса), измеренная на настоящих
+  прогонах на RTX 5060, — 0,006–0,010; порог в тесте взят с запасом,
+  `0.05`;
+- отдельный тест `test_load_wav_preserves_channel_order` на файле с заведомо
+  разными левым и правым каналом (фикстура `make_wav` пишет одинаковый синус
+  в оба канала и не ловит перепутанную ось после `.T`). Он тоже импортирует
+  `torch`/`demucs`, поэтому живёт в этом же файле под тем же `pytestmark`.
+
 ```python
 import time
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from karaoke_api.audio.probe import probe_audio
-from karaoke_api.separation.demucs_local import DemucsSeparator
+from karaoke_api.separation.demucs_local import DemucsSeparator, _load_wav
 
 pytestmark = pytest.mark.slow
+
+MAX_RECONSTRUCTION_RELATIVE_ERROR = 0.05
+
+
+def _write_asymmetric_stereo(path, duration_sec: float = 0.2,
+                             sample_rate: int = 44100):
+    frames = int(duration_sec * sample_rate)
+    left = np.full(frames, 0.5, dtype=np.float32)
+    right = np.full(frames, -0.5, dtype=np.float32)
+    data = np.stack([left, right], axis=1)
+    sf.write(str(path), data, sample_rate)
+    return path
+
+
+def test_load_wav_preserves_channel_order(tmp_path):
+    source = _write_asymmetric_stereo(tmp_path / "lr.wav")
+    wav, sample_rate = _load_wav(source)
+
+    assert sample_rate == 44100
+    assert wav.shape[0] == 2
+    assert wav[0].mean().item() == pytest.approx(0.5, abs=1e-3)
+    assert wav[1].mean().item() == pytest.approx(-0.5, abs=1e-3)
 
 
 def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
@@ -2667,6 +2744,8 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     out.mkdir()
 
     separator = DemucsSeparator()
+    assert separator.device == "cuda"
+
     started = time.perf_counter()
     result = separator.separate(source, out, lambda stage, pct: None)
     elapsed = time.perf_counter() - started
@@ -2674,9 +2753,25 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     assert result.vocals.is_file()
     assert result.no_vocals.is_file()
 
-    info = probe_audio(result.no_vocals)
-    assert abs(info.duration_sec - duration) < 0.5
-    assert info.channels == 2
+    vocals_info = probe_audio(result.vocals)
+    no_vocals_info = probe_audio(result.no_vocals)
+    assert abs(no_vocals_info.duration_sec - duration) < 0.5
+    assert no_vocals_info.channels == 2
+    assert vocals_info.sample_rate == 44100
+    assert no_vocals_info.sample_rate == 44100
+
+    source_wav, _ = sf.read(str(source), dtype="float32", always_2d=True)
+    vocals_wav, _ = sf.read(str(result.vocals), dtype="float32", always_2d=True)
+    no_vocals_wav, _ = sf.read(str(result.no_vocals), dtype="float32",
+                               always_2d=True)
+    assert not np.array_equal(vocals_wav, no_vocals_wav)
+
+    frames = min(len(source_wav), len(vocals_wav), len(no_vocals_wav))
+    recon = vocals_wav[:frames] + no_vocals_wav[:frames]
+    mix = source_wav[:frames]
+    diff_rms = float(np.sqrt(np.mean((recon - mix) ** 2)))
+    mix_rms = float(np.sqrt(np.mean(mix ** 2)))
+    relative_error = diff_rms / mix_rms
 
     ratio = elapsed / duration
     with capsys.disabled():
@@ -2686,8 +2781,11 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
             f"длительность:      {duration:.1f} с\n"
             f"обработка заняла:  {elapsed:.1f} с\n"
             f"на 3,5-мин трек:   {ratio * 210:.1f} с (экстраполяция)\n"
+            f"ошибка реконстр.:  {relative_error:.4f}\n"
             f"=============="
         )
+
+    assert relative_error < MAX_RECONSTRUCTION_RELATIVE_ERROR
 ```
 
 - [ ] **Step 5: Запустить медленный тест**
@@ -2703,6 +2801,22 @@ Expected: PASS, медленный тест пропущен (`deselected`)
 - [ ] **Step 7: Записать замер в контекстный документ**
 
 Открыть `karaoke-context.md`, раздел 4.5, таблицу «Допущения». Заменить строку про время обработки фактическим значением из вывода теста и убрать пометку о том, что число не замерено. Если фактическое время отличается от 25 с более чем на треть — пересчитать таблицы «Сравнение путей» и «Что это даёт тарифу» в 4.6.
+
+**Уточнение, зафиксированное при выполнении задачи 12 (решение координатора):**
+таблица допущений построена на RTX 4090, а замер физически возможен только
+на доступном железе — RTX 5060 (заметно слабее). Молча подставить число с
+5060 в модель себестоимости 4090 значило бы соврать в расчёте, поэтому в
+документе явно указано железо замера, а денежные таблицы пересчитываются
+только если замер на 5060 превысит 25 с больше чем на треть (~33 с) — раз
+карта слабее, а укладывается в исходное допущение, оно тем самым
+подтверждено консервативным, а не опровергнуто. Второй круг ревью
+дополнительно потребовал не прятать холодный прогон (первый настоящий
+инференс после установки, без прогретого CUDA/cuDNN JIT-кеша): он дал ≈167 с
+на 3,5-мин трек против тёплых ≈24 с — почти в 7 раз медленнее, и это отдельный
+факт, который читатель раздела о RunPod Serverless обязан увидеть рядом,
+явно отметив, что заложенный коэффициент утилизации 70% на этот разрыв не
+рассчитывался (он моделирует простаивающие GPU-секунды между заданиями, а не
+задержку конкретного холодного запроса).
 
 - [ ] **Step 8: Написать README**
 

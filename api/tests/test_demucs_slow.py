@@ -1,11 +1,106 @@
 import time
 
+import numpy as np
 import pytest
+import soundfile as sf
+import torch
 
 from karaoke_api.audio.probe import probe_audio
-from karaoke_api.separation.demucs_local import DemucsSeparator
+from karaoke_api.separation import demucs_local
+from karaoke_api.separation.demucs_local import DemucsSeparator, _load_wav
 
 pytestmark = pytest.mark.slow
+
+# Относительная ошибка реконструкции (RMS разности к RMS исходного микса),
+# измеренная на настоящих прогонах этого теста на RTX 5060: 0.0097 и 0.0060
+# (два прогона подряд, синус 440 Гц 30 с). htdemucs — не маскирующая модель,
+# точной суммы в 4 стема не даёт, так что нулевой ошибки не ждём. Порог —
+# 0.05, это ~5-8x запас от обоих замеров: настоящая поломка (потерянная
+# транспозиция, забытая денормировка, обнулённый канал) сдвигает ошибку на
+# порядки, а не на десятки процентов, так что запас не грозит ложными
+# срабатываниями на нормальном шуме модели.
+MAX_RECONSTRUCTION_RELATIVE_ERROR = 0.05
+
+
+def _write_asymmetric_stereo(path, duration_sec: float = 0.2,
+                             sample_rate: int = 44100):
+    """WAV с разным сигналом в левом и правом канале.
+
+    conftest.make_wav пишет одинаковый синус в оба канала — на нём
+    перепутанный порядок осей после транспозиции (.T) в _load_wav остался
+    бы незамеченным. Здесь каналы намеренно разные постоянные значения.
+    """
+    frames = int(duration_sec * sample_rate)
+    left = np.full(frames, 0.5, dtype=np.float32)
+    right = np.full(frames, -0.5, dtype=np.float32)
+    data = np.stack([left, right], axis=1)
+    sf.write(str(path), data, sample_rate)
+    return path
+
+
+def test_load_wav_preserves_channel_order(tmp_path):
+    """_load_wav не путает левый и правый канал транспозицией."""
+    source = _write_asymmetric_stereo(tmp_path / "lr.wav")
+    wav, sample_rate = _load_wav(source)
+
+    assert sample_rate == 44100
+    assert wav.shape[0] == 2
+    assert wav[0].mean().item() == pytest.approx(0.5, abs=1e-3)
+    assert wav[1].mean().item() == pytest.approx(-0.5, abs=1e-3)
+
+
+class _FakeModel:
+    """Минимальная замена demucs-модели: помнит, на какие устройства её
+    переносили. Настоящий OOM на GPU не воспроизвести детерминированно, а
+    подменять apply_model, чтобы протестировать само разделение, было бы
+    обманом — тест на моках ничего не доказал бы про качество звука.
+    Восстановление устройства в finally — чисто структурное свойство
+    _apply_with_fallback, и его честно проверить без единого обращения к
+    настоящему GPU.
+    """
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def to(self, device):
+        self.calls.append(device)
+        return self
+
+
+def test_oom_fallback_restores_device_even_if_cpu_pass_also_fails(monkeypatch):
+    """Если сорвался и сам CPU-проход, модель не должна навсегда осесть на
+    CPU, пока self.device продолжает утверждать "cuda"."""
+    separator = DemucsSeparator(device="cuda")
+    fake_model = _FakeModel()
+
+    def fake_apply_model(model, mix, device, progress=False):
+        if device == "cuda":
+            raise torch.cuda.OutOfMemoryError("симулированная нехватка VRAM")
+        raise RuntimeError("CPU-проход тоже не справился (симуляция)")
+
+    monkeypatch.setattr(demucs_local, "apply_model", fake_apply_model)
+
+    with pytest.raises(RuntimeError):
+        separator._apply_with_fallback(fake_model, torch.zeros(2, 10))
+
+    assert fake_model.calls == ["cpu", "cuda"]
+
+
+def test_oom_fallback_skipped_when_device_is_cpu(monkeypatch):
+    """При self.device == "cpu" откатываться некуда — ветка не должна
+    пытаться переносить модель между устройствами вовсе."""
+    separator = DemucsSeparator(device="cpu")
+    fake_model = _FakeModel()
+
+    def fake_apply_model(model, mix, device, progress=False):
+        raise torch.cuda.OutOfMemoryError("не должно ловиться на cpu-пути")
+
+    monkeypatch.setattr(demucs_local, "apply_model", fake_apply_model)
+
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        separator._apply_with_fallback(fake_model, torch.zeros(2, 10))
+
+    assert fake_model.calls == []
 
 
 def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
@@ -20,6 +115,11 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     out.mkdir()
 
     separator = DemucsSeparator()
+    assert separator.device == "cuda", (
+        "тест требует настоящий GPU (маркер slow) — на CPU замер "
+        "бессмысленно сравнивать с допущением о серверном GPU-инференсе"
+    )
+
     started = time.perf_counter()
     result = separator.separate(source, out, lambda stage, pct: None)
     elapsed = time.perf_counter() - started
@@ -27,9 +127,32 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     assert result.vocals.is_file()
     assert result.no_vocals.is_file()
 
-    info = probe_audio(result.no_vocals)
-    assert abs(info.duration_sec - duration) < 0.5
-    assert info.channels == 2
+    vocals_info = probe_audio(result.vocals)
+    no_vocals_info = probe_audio(result.no_vocals)
+    assert abs(no_vocals_info.duration_sec - duration) < 0.5
+    assert no_vocals_info.channels == 2
+    assert vocals_info.sample_rate == 44100
+    assert no_vocals_info.sample_rate == 44100
+
+    source_wav, _ = sf.read(str(source), dtype="float32", always_2d=True)
+    vocals_wav, _ = sf.read(str(result.vocals), dtype="float32", always_2d=True)
+    no_vocals_wav, _ = sf.read(str(result.no_vocals), dtype="float32",
+                               always_2d=True)
+
+    # Дорожки не должны быть побитово одинаковыми — иначе разделение
+    # фактически не произошло (например, обе записаны из одного тензора).
+    assert not np.array_equal(vocals_wav, no_vocals_wav)
+
+    # Инвариант реконструкции: vocals + no_vocals — это сумма всех четырёх
+    # источников htdemucs и должна приближённо восстанавливать исходный
+    # микс. Проверка разом бьёт по денормировке, транспозиции и потере
+    # канала — любая из этих поломок сдвинет ошибку далеко за порог.
+    frames = min(len(source_wav), len(vocals_wav), len(no_vocals_wav))
+    recon = vocals_wav[:frames] + no_vocals_wav[:frames]
+    mix = source_wav[:frames]
+    diff_rms = float(np.sqrt(np.mean((recon - mix) ** 2)))
+    mix_rms = float(np.sqrt(np.mean(mix ** 2)))
+    relative_error = diff_rms / mix_rms
 
     ratio = elapsed / duration
     with capsys.disabled():
@@ -39,5 +162,9 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
             f"длительность:      {duration:.1f} с\n"
             f"обработка заняла:  {elapsed:.1f} с\n"
             f"на 3,5-мин трек:   {ratio * 210:.1f} с (экстраполяция)\n"
+            f"ошибка реконстр.:  {relative_error:.4f} "
+            f"(порог {MAX_RECONSTRUCTION_RELATIVE_ERROR})\n"
             f"=============="
         )
+
+    assert relative_error < MAX_RECONSTRUCTION_RELATIVE_ERROR
