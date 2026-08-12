@@ -49,6 +49,7 @@ def test_job_reaches_done_with_stems(client, make_wav):
     assert body["progress"] == 1.0
     assert body["error"] is None
     assert set(body["result"]["stems"]) == {"vocals", "no_vocals"}
+    assert body["result"]["degraded"] is False
 
 
 def test_response_shape_is_stable(client, make_wav):

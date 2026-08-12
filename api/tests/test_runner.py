@@ -1,3 +1,4 @@
+import dataclasses
 import sqlite3
 
 import pytest
@@ -46,6 +47,33 @@ def test_successful_job_reaches_done(wiring):
     assert job.status is JobStatus.DONE
     assert job.stage is None
     assert set(job.result["stems"]) == {"vocals", "no_vocals"}
+    # FakeSeparator деградировать не умеет, но поле обязано присутствовать
+    # всегда — подсистеме B удобнее читать булево, чем проверять ключ.
+    assert job.result["degraded"] is False
+
+
+class _DegradedSeparator:
+    """Подделка, воспроизводящая SeparationResult с degraded=True — так,
+    как его вернул бы DemucsSeparator после реального отката на CPU."""
+
+    def separate(self, source, out_dir, on_progress):
+        result = FakeSeparator().separate(source, out_dir, on_progress)
+        return dataclasses.replace(result, degraded=True)
+
+
+def test_degraded_result_reaches_job_result(wiring):
+    """Пометка о деградации обязана доехать от SeparationResult до
+    результата задачи в базе — иначе подсистема B не сможет показать
+    пользователю, что трек обработан медленным путём."""
+    store, storage, work, track_id = wiring
+    job_id = store.create_job(track_id)
+
+    runner = JobRunner(store, storage, _DegradedSeparator(), work)
+    assert runner.run_once() is True
+
+    job = store.get_job(job_id)
+    assert job.status is JobStatus.DONE
+    assert job.result["degraded"] is True
 
 
 def test_stems_are_written_to_storage(wiring):

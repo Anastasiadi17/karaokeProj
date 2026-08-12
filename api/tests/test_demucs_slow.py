@@ -78,6 +78,11 @@ class _FakeModel:
 
     def __init__(self):
         self.calls: list[str] = []
+        # Нужны только для тестов, гоняющих separate() целиком поверх этой
+        # подделки (пропуская _ensure_model): демucs ждёт от модели ровно
+        # эти два атрибута для сборки стемов и записи файлов.
+        self.sources = ["drums", "bass", "other", "vocals"]
+        self.samplerate = 44100
 
     def to(self, device):
         self.calls.append(device)
@@ -118,6 +123,102 @@ def test_oom_fallback_skipped_when_device_is_cpu(monkeypatch):
         separator._apply_with_fallback(fake_model, torch.zeros(2, 10))
 
     assert fake_model.calls == []
+
+
+def test_apply_with_fallback_reports_degraded_true_after_successful_retry(
+    monkeypatch,
+):
+    """Спека требует пометку о деградации, когда откат на CPU реально
+    произошёл и досчитал — иначе подсистема B не сможет показать
+    пользователю, что трек обработан медленным путём."""
+    separator = DemucsSeparator(device="cuda")
+    fake_model = _FakeModel()
+
+    def fake_apply_model(model, mix, device, progress=False):
+        if device == "cuda":
+            raise torch.cuda.OutOfMemoryError("симулированная нехватка VRAM")
+        # apply_model возвращает батч, из которого _apply_with_fallback сам
+        # берёт [0] — поэтому здесь на одну размерность больше, чем в
+        # ожидаемых sources.
+        return torch.zeros(1, 4, *mix.shape[1:])
+
+    monkeypatch.setattr(demucs_local, "apply_model", fake_apply_model)
+
+    sources, degraded = separator._apply_with_fallback(
+        fake_model, torch.zeros(2, 10)
+    )
+
+    assert degraded is True
+    assert fake_model.calls == ["cpu", "cuda"]
+    assert sources.shape == (4, 2, 10)
+
+
+def test_apply_with_fallback_reports_degraded_false_without_oom(monkeypatch):
+    """Без отката пометки о деградации быть не должно — иначе нормально
+    обработанный на GPU трек тоже показался бы деградировавшим."""
+    separator = DemucsSeparator(device="cuda")
+    fake_model = _FakeModel()
+
+    def fake_apply_model(model, mix, device, progress=False):
+        return torch.zeros(1, 4, *mix.shape[1:])
+
+    monkeypatch.setattr(demucs_local, "apply_model", fake_apply_model)
+
+    sources, degraded = separator._apply_with_fallback(
+        fake_model, torch.zeros(2, 10)
+    )
+
+    assert degraded is False
+    assert fake_model.calls == []
+
+
+def test_separate_result_degraded_true_reaches_job_result(
+    monkeypatch, make_wav, tmp_path
+):
+    """Проверяет весь путь separate(), а не только _apply_with_fallback:
+    пометка о деградации обязана доехать до SeparationResult, который
+    JobRunner кладёт в результат задачи как есть."""
+    separator = DemucsSeparator(device="cuda")
+    fake_model = _FakeModel()
+    monkeypatch.setattr(separator, "_ensure_model", lambda: fake_model)
+
+    def fake_apply_model(model, mix, device, progress=False):
+        if device == "cuda":
+            raise torch.cuda.OutOfMemoryError("симулированная нехватка VRAM")
+        return torch.zeros(1, 4, *mix.shape[1:])
+
+    monkeypatch.setattr(demucs_local, "apply_model", fake_apply_model)
+
+    source = make_wav(duration_sec=0.2, sample_rate=44100, channels=2)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    result = separator.separate(source, out, lambda stage, pct: None)
+
+    assert result.degraded is True
+    assert result.vocals.is_file()
+    assert result.no_vocals.is_file()
+
+
+def test_separate_result_not_degraded_without_fallback(
+    monkeypatch, make_wav, tmp_path
+):
+    separator = DemucsSeparator(device="cuda")
+    fake_model = _FakeModel()
+    monkeypatch.setattr(separator, "_ensure_model", lambda: fake_model)
+
+    def fake_apply_model(model, mix, device, progress=False):
+        return torch.zeros(1, 4, *mix.shape[1:])
+
+    monkeypatch.setattr(demucs_local, "apply_model", fake_apply_model)
+
+    source = make_wav(duration_sec=0.2, sample_rate=44100, channels=2)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    result = separator.separate(source, out, lambda stage, pct: None)
+
+    assert result.degraded is False
 
 
 @pytest.mark.slow

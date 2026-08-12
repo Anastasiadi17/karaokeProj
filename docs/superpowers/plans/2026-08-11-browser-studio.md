@@ -30,7 +30,7 @@
 
 **Interfaces:**
 - Consumes: HTTP-контракт подсистемы A
-- Produces: типы `JobStatus = "queued" | "running" | "done" | "failed"`, `Stage = "loading" | "separating" | "writing"`, `JobState { status, stage, progress, error, result }`, `UploadResult { trackId, jobId }`; класс `ApiClient(baseUrl: string)` с методами `uploadTrack(file: File): Promise<UploadResult>`, `getJob(jobId: string): Promise<JobState>`, `stemUrl(trackId: string, kind: "vocals" | "no_vocals"): string`, `deleteTrack(trackId: string): Promise<void>`; ошибка `ApiError` с полем `code`.
+- Produces: типы `JobStatus = "queued" | "running" | "done" | "failed"`, `Stage = "loading" | "separating" | "writing"`, `JobState { status, stage, progress, error, result }`, где `result` при `status = "done"` — `{ stems: { vocals, no_vocals }, degraded: boolean }` (`degraded` — пометка о деградации после отката demucs на CPU при нехватке видеопамяти, присутствует в контракте всегда, не только при деградации), `UploadResult { trackId, jobId }`; класс `ApiClient(baseUrl: string)` с методами `uploadTrack(file: File): Promise<UploadResult>`, `getJob(jobId: string): Promise<JobState>`, `stemUrl(trackId: string, kind: "vocals" | "no_vocals"): string`, `deleteTrack(trackId: string): Promise<void>`; ошибка `ApiError` с полем `code`.
 
 - [ ] **Step 1: Создать проект**
 
@@ -192,6 +192,7 @@ export type StemKind = "vocals" | "no_vocals";
 
 export interface JobResult {
   stems: Record<StemKind, string>;
+  degraded: boolean;
 }
 
 export interface JobState {

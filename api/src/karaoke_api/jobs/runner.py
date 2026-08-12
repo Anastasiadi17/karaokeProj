@@ -83,7 +83,9 @@ class JobRunner:
                 self._storage.store_file(key, path)
                 stems[name] = key
 
-            self._store.finish(job.id, {"stems": stems})
+            self._store.finish(
+                job.id, {"stems": stems, "degraded": result.degraded}
+            )
         except Exception as exc:
             log.exception("задача %s упала", job.id)
             try:

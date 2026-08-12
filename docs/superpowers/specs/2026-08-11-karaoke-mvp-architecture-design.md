@@ -160,7 +160,7 @@ karaokeProj/
 | `tracks` | id, filename, storage_key, duration_sec, created_at |
 | `jobs` | id, track_id, status, stage, progress, error_message, result_json, timestamps |
 
-`result_json` хранит ключи стемов: `{"stems": {"vocals": "...", "no_vocals": "..."}}`
+`result_json` хранит ключи стемов и пометку о деградации: `{"stems": {"vocals": "...", "no_vocals": "..."}, "degraded": false}`
 
 **Статус и стадия — разные поля.** `status` ∈ `{queued, running, done, failed}`
 описывает судьбу задачи; `stage` ∈ `{loading, separating, writing}` осмыслен

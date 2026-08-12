@@ -46,7 +46,9 @@ class DemucsSeparator:
             self._model = get_model(self._model_name).to(self.device).eval()
         return self._model
 
-    def _apply_with_fallback(self, model, wav: torch.Tensor) -> torch.Tensor:
+    def _apply_with_fallback(
+        self, model, wav: torch.Tensor
+    ) -> tuple[torch.Tensor, bool]:
         """Прогнать модель, на нехватке видеопамяти — откатиться на CPU.
 
         Откат осмыслен только если основной проход шёл на CUDA: на "cpu"
@@ -57,15 +59,21 @@ class DemucsSeparator:
         Восстановление устройства модели — в finally: если сорвётся и сам
         CPU-проход, self._model не должен навсегда осесть на CPU, пока
         self.device продолжает утверждать "cuda".
+
+        Возвращает (sources, degraded) — второй элемент True, только если
+        откат на CPU действительно произошёл и досчитал. Наверх это
+        сигнализирует separate(), которому нужно положить пометку о
+        деградации в SeparationResult — иначе о том, что задача выполнена
+        медленным путём, никто не узнает.
         """
         if self.device != "cuda":
             with torch.no_grad():
                 return apply_model(model, wav[None], device=self.device,
-                                   progress=False)[0]
+                                   progress=False)[0], False
         try:
             with torch.no_grad():
                 return apply_model(model, wav[None], device=self.device,
-                                   progress=False)[0]
+                                   progress=False)[0], False
         except torch.cuda.OutOfMemoryError as exc:
             log.warning("нехватка видеопамяти, повторяю на CPU: %s", exc)
             torch.cuda.empty_cache()
@@ -73,7 +81,7 @@ class DemucsSeparator:
             try:
                 with torch.no_grad():
                     return apply_model(model, wav[None], device="cpu",
-                                       progress=False)[0]
+                                       progress=False)[0], True
             finally:
                 model.to(self.device)
 
@@ -98,7 +106,7 @@ class DemucsSeparator:
         wav = (wav - reference.mean()) / (reference.std() + 1e-8)
 
         on_progress("separating", 0.1)
-        sources = self._apply_with_fallback(model, wav)
+        sources, degraded = self._apply_with_fallback(model, wav)
 
         sources = sources * (reference.std() + 1e-8) + reference.mean()
         stems = dict(zip(model.sources, sources))
@@ -120,4 +128,5 @@ class DemucsSeparator:
         save_audio(vocals, str(vocals_path), model.samplerate)
         save_audio(no_vocals, str(no_vocals_path), model.samplerate)
 
-        return SeparationResult(vocals=vocals_path, no_vocals=no_vocals_path)
+        return SeparationResult(vocals=vocals_path, no_vocals=no_vocals_path,
+                                degraded=degraded)
