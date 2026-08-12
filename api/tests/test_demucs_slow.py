@@ -38,6 +38,16 @@ from karaoke_api.separation.demucs_local import (  # noqa: E402
 # срабатываниями на нормальном шуме модели.
 MAX_RECONSTRUCTION_RELATIVE_ERROR = 0.05
 
+# Модель времени обработки, построенная по двум длительностям на RTX 5060
+# (30 с -> 3,5 с и 600 с -> 20,9 с; второй замер разовый, скриптом, в набор не
+# добавлялся). Одной точки не хватает принципиально: постоянная составляющая —
+# загрузка весов из локального кеша и перенос на GPU — в линейной
+# экстраполяции умножается вместе с переменной и завышает трёхминутный трек
+# втрое. Числа машинно-зависимые и используются только в печати замера, ни
+# одно утверждение теста на них не опирается. Разбор — karaoke-context.md 4.5.
+STARTUP_OVERHEAD_SEC = 2.6
+SEC_PER_AUDIO_SEC = 0.0305
+
 
 def _write_asymmetric_stereo(path, duration_sec: float = 0.2,
                              sample_rate: int = 44100):
@@ -225,8 +235,10 @@ def test_separate_result_not_degraded_without_fallback(
 def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     """Проверяет интеграцию и печатает фактическое время обработки.
 
-    Это число закрывает допущение «25 секунд» из раздела 4.5
-    контекстного документа — главную дыру в юнит-экономике.
+    Это число закрывает допущение «25 секунд» из раздела 4.5 контекстного
+    документа — главную дыру в юнит-экономике. Сам по себе один клип на это
+    не отвечает: пересчитывать его на трек нужно двухточечной моделью
+    (константы выше), а не пропорцией.
     """
     duration = 30.0
     source = make_wav(duration_sec=duration, sample_rate=44100, channels=2)
@@ -274,13 +286,18 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
     relative_error = diff_rms / mix_rms
 
     ratio = elapsed / duration
+    modelled = STARTUP_OVERHEAD_SEC + SEC_PER_AUDIO_SEC * 210
     with capsys.disabled():
         print(
             f"\n=== ЗАМЕР ===\n"
             f"устройство:        {separator.device}\n"
             f"длительность:      {duration:.1f} с\n"
             f"обработка заняла:  {elapsed:.1f} с\n"
-            f"на 3,5-мин трек:   {ratio * 210:.1f} с (экстраполяция)\n"
+            f"на 3,5-мин трек:   {modelled:.1f} с "
+            f"({STARTUP_OVERHEAD_SEC} с постоянных + "
+            f"{SEC_PER_AUDIO_SEC} с/с звука, по двум точкам)\n"
+            f"  для сравнения:   {ratio * 210:.1f} с — линейная экстраполяция\n"
+            f"                   ОТ ЭТОГО КЛИПА, завышает втрое (см. 4.5)\n"
             f"ошибка реконстр.:  {relative_error:.4f} "
             f"(порог {MAX_RECONSTRUCTION_RELATIVE_ERROR})\n"
             f"=============="
