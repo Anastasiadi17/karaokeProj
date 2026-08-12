@@ -252,7 +252,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state: AppState = request.app.state.karaoke
         if state.store.get_track(track_id) is None:
             return _error("not_found", status=404)
-        state.storage.delete_prefix(f"tracks/{track_id}")
+        try:
+            state.storage.delete_prefix(f"tracks/{track_id}")
+        except Exception:
+            # На Windows файл, занятый работающей задачей, не удаляется
+            # (WinError 32) — штатный сценарий, а не сбой сервиса, и отвечать
+            # на него голым 500 без кода нечестно. Та же защита, что в цикле
+            # автоочистки. Строку трека оставляем намеренно: без неё файлы
+            # стали бы сиротами, а так их подберёт уборка по TTL.
+            log.exception("не удалось удалить файлы трека %s", track_id)
+            return _error("delete_failed", status=503)
         state.store.delete_track(track_id)
         return Response(status_code=204)
 

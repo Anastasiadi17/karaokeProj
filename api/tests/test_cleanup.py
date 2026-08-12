@@ -54,6 +54,38 @@ def test_delete_endpoint_removes_track(tmp_path, make_wav):
         assert client.get(f"/api/jobs/{ids['job_id']}").status_code == 404
 
 
+def test_delete_endpoint_reports_locked_files_instead_of_crashing(tmp_path,
+                                                                  make_wav,
+                                                                  monkeypatch):
+    """Заблокированный файл на Windows — штатный сценарий. DELETE обязан
+    ответить внятным кодом, а не голым 500, и оставить строку трека, чтобы
+    файлы подобрала уборка по TTL, а не превратились в сирот."""
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+    )
+    with TestClient(create_app(settings)) as client:
+        with open(make_wav(duration_sec=0.5), "rb") as fh:
+            ids = client.post(
+                "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}
+            ).json()
+
+        state = client.app.state.karaoke
+        monkeypatch.setattr(
+            state.storage, "delete_prefix",
+            lambda prefix: (_ for _ in ()).throw(
+                PermissionError("simulated: WinError 32, file in use")
+            ),
+        )
+
+        response = client.delete(f"/api/tracks/{ids['track_id']}")
+
+        assert response.status_code == 503
+        assert response.json()["error"] == "delete_failed"
+        assert state.store.get_track(ids["track_id"]) is not None
+
+
 def test_delete_unknown_track_is_404(tmp_path):
     settings = Settings(
         data_dir=tmp_path / "data",
