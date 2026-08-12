@@ -53,13 +53,87 @@ def test_rejects_non_audio(client, tmp_path):
     assert response.json()["error"] == "unsupported_format"
 
 
+_BOUNDARY = "----karaokeTestBoundary"
+_MULTIPART_TYPE = f"multipart/form-data; boundary={_BOUNDARY}"
+
+
+def _multipart_body(data: bytes, filename: str = "song.wav") -> bytes:
+    head = (
+        f"--{_BOUNDARY}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: audio/wav\r\n\r\n"
+    ).encode()
+    return head + data + f"\r\n--{_BOUNDARY}--\r\n".encode()
+
+
 def test_rejects_too_large(client, tmp_path, make_wav):
+    """Объявленный Content-Length больше лимита — 413 до разбора формы."""
     big = make_wav(name="big.wav", duration_sec=4.0)
     padded = tmp_path / "padded.wav"
     padded.write_bytes(big.read_bytes() + b"\x00" * 1_000_000)
     response = _upload(client, padded)
+    assert response.status_code == 413
+    assert response.json()["error"] == "too_large"
+
+
+def test_oversized_body_is_rejected_without_parsing_the_form(client):
+    """Отказ обязан наступить ДО разбора multipart, иначе тело уже лежит
+    на диске системного temp целиком.
+
+    Тело здесь заведомо неразбираемое: граница объявлена, а содержимого по
+    ней нет. Если бы отказ шёл после разбора, ответ был бы про сломанный
+    multipart, а не про размер.
+    """
+    junk = b"x" * (1_000_000 + 8192 + 1)
+
+    response = client.post(
+        "/api/tracks",
+        headers={"Content-Type": _MULTIPART_TYPE},
+        content=junk,
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "too_large"
+
+
+def test_chunked_upload_without_content_length_hits_the_counter(client, tmp_path,
+                                                                make_wav):
+    """При chunked заголовка Content-Length нет — гейт пропускает запрос,
+    и лимит держит счётчик байт в обработчике."""
+    big = make_wav(name="big.wav", duration_sec=4.0)
+    payload = _multipart_body(big.read_bytes() + b"\x00" * 1_000_000)
+
+    def chunked():
+        yield payload
+
+    response = client.post(
+        "/api/tracks",
+        headers={"Content-Type": _MULTIPART_TYPE},
+        content=chunked(),
+    )
+
+    assert "content-length" not in {
+        k.lower() for k in response.request.headers
+    }, "тест бессмыслен, если httpx всё же выставил Content-Length"
     assert response.status_code == 400
     assert response.json()["error"] == "too_large"
+
+
+def test_chunked_upload_of_valid_track_still_works(client, make_wav):
+    """Отсутствие Content-Length не должно ломать нормальную загрузку."""
+    payload = _multipart_body(make_wav(duration_sec=1.0).read_bytes())
+
+    def chunked():
+        yield payload
+
+    response = client.post(
+        "/api/tracks",
+        headers={"Content-Type": _MULTIPART_TYPE},
+        content=chunked(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["track_id"]
 
 
 def test_extension_does_not_grant_access(client, make_wav, tmp_path):

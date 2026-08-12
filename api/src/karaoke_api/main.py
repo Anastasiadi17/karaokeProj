@@ -23,6 +23,56 @@ def _error(code: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
 
+class RejectOversizedBody:
+    """Отвергает запрос по объявленному Content-Length до разбора формы.
+
+    Счётчик байт внутри обработчика загрузки не ограничивает ничего:
+    `file: UploadFile` разрешается как зависимость уже ПОСЛЕ того, как
+    FastAPI вызвал `await request.form()` (routing.py: form читается на
+    строке 430, зависимости решаются на 481), а Starlette к этому моменту
+    вычитал всё тело в SpooledTemporaryFile. `MultiPartParser.max_part_size`
+    (1 МБ) применяется только в ветке `if self._current_part.file is None`,
+    то есть к обычным полям формы — файловые части пишутся без лимита.
+    Неаутентифицированный клиент таким образом кладёт на диск системного
+    temp тело любого размера, а лимит срабатывает постфактум.
+
+    Отсюда и ASGI-уровень: это единственная точка отказа ДО разбора формы.
+    Заголовок можно подделать, поэтому счётчик в обработчике остаётся
+    страховкой, а отсутствующий Content-Length (chunked) загрузку не
+    ломает — там работает тот же счётчик.
+
+    Настоящий периметр (nginx/Cloudflare `client_max_body_size`) это не
+    заменяет: до приложения запрос всё равно доходит.
+    """
+
+    # Multipart-конверт (граница, заголовки части) добавляет к телу сотни
+    # байт. Без допуска файл ровно в max_upload_bytes отвергался бы.
+    ENVELOPE_SLACK = 8192
+
+    def __init__(self, app, max_upload_bytes: int) -> None:
+        self.app = app
+        self._limit = max_upload_bytes + self.ENVELOPE_SLACK
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http" and self._declared_over_limit(scope):
+            response = _error("too_large", status=413)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+    def _declared_over_limit(self, scope) -> bool:
+        for name, value in scope.get("headers", ()):
+            if name.lower() != b"content-length":
+                continue
+            try:
+                return int(value) > self._limit
+            except ValueError:
+                # Мусор в заголовке — не наше дело его валидировать,
+                # дальше по стеку тело всё равно посчитает счётчик.
+                return False
+        return False
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
@@ -85,6 +135,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             state.store.close()
 
     app = FastAPI(title="Karaoke API", lifespan=lifespan)
+    app.add_middleware(
+        RejectOversizedBody, max_upload_bytes=settings.max_upload_bytes
+    )
 
     @app.post("/api/tracks", status_code=201)
     async def upload_track(request: Request, file: UploadFile):
@@ -95,6 +148,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             staged = Path(tmp) / "upload"
             size = 0
             with staged.open("wb") as out:
+                # Страховка под RejectOversizedBody: заголовку Content-Length
+                # верить нельзя, а при chunked его нет вовсе.
                 while chunk := await file.read(1024 * 1024):
                     size += len(chunk)
                     if size > limits.max_upload_bytes:
