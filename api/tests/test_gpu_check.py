@@ -1,11 +1,14 @@
 import sys
 import types
 
+import pytest
 from fastapi.testclient import TestClient
 
+from karaoke_api import deps, main
 from karaoke_api.config import Settings
 from karaoke_api.gpu import GpuStatus, check_gpu
 from karaoke_api.main import create_app
+from karaoke_api.separation.fake import FakeSeparator
 
 
 class _FakeTensor:
@@ -134,3 +137,77 @@ def test_health_endpoint_exposes_gpu(tmp_path):
         assert "gpu" in body
         assert "available" in body["gpu"]
         assert body["separator"] == "fake"
+
+
+def test_app_state_passes_gpu_verdict_to_separator(tmp_path, monkeypatch):
+    """Вердикт зонда обязан доехать до сборки разделителя.
+
+    До починки сепаратор строился раньше check_gpu() и выбирал устройство
+    сам — результат проверки не влиял ни на что.
+    """
+    seen = {}
+
+    def spy(settings, gpu=None):
+        seen["gpu"] = gpu
+        return FakeSeparator()
+
+    monkeypatch.setattr(deps, "build_separator", spy)
+    status = GpuStatus(False, reason="сломанная сборка", hint="cu128")
+
+    state = deps.AppState.build(
+        Settings(
+            data_dir=tmp_path / "data",
+            db_path=tmp_path / "data" / "db.sqlite",
+            separator="fake",
+        ),
+        status,
+    )
+    state.store.close()
+
+    assert seen["gpu"] is status
+
+
+def test_broken_gpu_build_forces_cpu_separator():
+    """На сломанной сборке is_available() возвращает True, и DemucsSeparator
+    сам взял бы cuda — каждая задача падала бы на no kernel image, пока лог
+    обещает CPU. Спека §6 требует продолжать на CPU по-настоящему."""
+    pytest.importorskip("torch")
+    pytest.importorskip("demucs")
+
+    separator = deps.build_separator(
+        Settings(separator="demucs"),
+        GpuStatus(False, reason="пробное вычисление дало 3, ожидалось 16"),
+    )
+    assert separator.device == "cpu"
+
+
+def test_working_gpu_build_does_not_force_cpu():
+    pytest.importorskip("torch")
+    pytest.importorskip("demucs")
+    import torch
+
+    separator = deps.build_separator(
+        Settings(separator="demucs"), GpuStatus(True, device_name="RTX 5060")
+    )
+    expected = "cuda" if torch.cuda.is_available() else "cpu"
+    assert separator.device == expected
+
+
+def test_unavailable_gpu_at_startup_makes_the_app_use_cpu(tmp_path, monkeypatch):
+    """Сквозная проводка: лайфспан → AppState.build → устройство сепаратора."""
+    pytest.importorskip("torch")
+    pytest.importorskip("demucs")
+
+    monkeypatch.setattr(
+        main, "check_gpu",
+        lambda: GpuStatus(False, reason="CUDA недоступна", hint="проверьте драйвер"),
+    )
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="demucs",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/health").json()["gpu"]["available"] is False
+        assert client.app.state.karaoke.separator.device == "cpu"

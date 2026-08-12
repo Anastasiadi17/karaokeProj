@@ -78,7 +78,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        state = AppState.build(settings)
+        # Проверка идёт до сборки состояния: её вердикт выбирает устройство
+        # разделителя. Раньше сепаратор строился первым и решал сам по
+        # torch.cuda.is_available() — то есть уходил на cuda даже тогда,
+        # когда зонд уже установил, что ядер под эту архитектуру нет.
+        gpu = check_gpu()
+        app.state.gpu = gpu
+        if gpu.available:
+            log.info("GPU готов: %s", gpu.device_name)
+        else:
+            log.warning("GPU недоступен (%s). Обработка пойдёт на CPU и будет "
+                        "в десятки раз медленнее. %s", gpu.reason, gpu.hint)
+
+        state = AppState.build(settings, gpu)
         app.state.karaoke = state
 
         orphans = state.store.fail_orphans()
@@ -87,14 +99,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         purge_expired(state.store, state.storage, settings.file_ttl_hours)
         purge_orphan_track_dirs(state.store, state.storage)
-
-        gpu = check_gpu()
-        app.state.gpu = gpu
-        if gpu.available:
-            log.info("GPU готов: %s", gpu.device_name)
-        else:
-            log.warning("GPU недоступен (%s). Обработка пойдёт на CPU и будет "
-                        "в десятки раз медленнее. %s", gpu.reason, gpu.hint)
 
         async def _cleanup_loop() -> None:
             while True:
