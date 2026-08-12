@@ -169,3 +169,20 @@ def test_rejects_allowed_but_unlisted_format(client, tmp_path):
 
     assert response.status_code == 400
     assert response.json()["error"] == "unsupported_format"
+
+
+@pytest.mark.parametrize("container", ["WAVEX", "RF64"])
+def test_accepts_wav_family_containers(client, tmp_path, container):
+    """WAVE_FORMAT_EXTENSIBLE и RF64 — обычные .wav, которые штатно выдают
+    редакторы и рекордеры. libsndfile читает их без проблем, и до починки
+    сервис отвергал их как «формат не поддерживается»: main сверял имя
+    контейнера ('wavex', 'rf64') со списком расширений.
+    """
+    path = tmp_path / f"{container.lower()}.wav"
+    sf.write(path, np.zeros((44100, 2), dtype="float32"), 44100,
+             format=container)
+
+    response = _upload(client, path, name=f"{container.lower()}.wav")
+
+    assert response.status_code == 201, response.json()
+    assert response.json()["track_id"]

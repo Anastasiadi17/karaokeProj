@@ -1,6 +1,14 @@
+import numpy as np
 import pytest
+import soundfile as sf
 
-from karaoke_api.audio.probe import AudioInfo, UnsupportedAudio, probe_audio
+from karaoke_api.audio import probe
+from karaoke_api.audio.probe import (
+    AudioInfo,
+    UnsupportedAudio,
+    normalize_format,
+    probe_audio,
+)
 
 
 def test_reads_wav_metadata(make_wav):
@@ -31,3 +39,37 @@ def test_extension_is_ignored_content_decides(make_wav, tmp_path):
     renamed.write_bytes(wav.read_bytes())
     info = probe_audio(renamed)
     assert info.format == "wav"
+
+
+@pytest.mark.parametrize("container", ["wav", "wavex", "rf64", "w64"])
+def test_wav_family_containers_normalize_to_wav(container):
+    assert normalize_format(container) == "wav"
+
+
+@pytest.mark.parametrize("container", ["mp3", "flac", "ogg", "aiff"])
+def test_other_containers_pass_through(container):
+    assert normalize_format(container) == container
+
+
+def test_wavex_is_probed_as_its_own_container(tmp_path):
+    """probe сохраняет настоящее имя контейнера — сведение делает политика."""
+    path = tmp_path / "extensible.wav"
+    sf.write(path, np.zeros((44100, 2), dtype="float32"), 44100, format="WAVEX")
+    assert probe_audio(path).format == "wavex"
+
+
+def test_zero_samplerate_is_unsupported_not_a_crash(tmp_path, monkeypatch):
+    """samplerate == 0 в заголовке — путь недоверенного ввода. Деление вне
+    try дало бы ZeroDivisionError и 500 вместо 400 unsupported_format."""
+    class _ZeroInfo:
+        frames = 1000
+        samplerate = 0
+        channels = 2
+        format = "WAV"
+
+    monkeypatch.setattr(probe, "sf", type("_SF", (), {
+        "info": staticmethod(lambda path: _ZeroInfo()),
+    }))
+
+    with pytest.raises(UnsupportedAudio):
+        probe_audio(tmp_path / "whatever.wav")

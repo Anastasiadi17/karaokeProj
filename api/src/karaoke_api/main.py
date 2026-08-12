@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .audio.probe import UnsupportedAudio, probe_audio
+from .audio.probe import UnsupportedAudio, normalize_format, probe_audio
 from .cleanup import purge_expired, purge_orphan_track_dirs
 from .config import Settings, get_settings
 from .deps import AppState
@@ -168,13 +168,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if info.duration_sec > limits.max_duration_sec:
                 return _error("too_long")
 
-            if info.format not in limits.allowed_formats:
+            # info.format — имя контейнера от libsndfile, allowed_formats —
+            # список пользовательских форматов. Для семейства wav это разные
+            # словари, их надо свести, иначе обычный WAVEX-файл от редактора
+            # получает «формат не поддерживается».
+            fmt = normalize_format(info.format)
+            if fmt not in limits.allowed_formats:
                 return _error("unsupported_format")
 
             # Идентификатор выдаётся до вставки: ключ строится из него, и
             # запись попадает в базу сразу целиком.
             track_id = new_id()
-            key = f"tracks/{track_id}/original.{info.format}"
+            key = f"tracks/{track_id}/original.{fmt}"
             state.storage.store_file(key, staged)
             state.store.create_track(
                 track_id, file.filename or "upload", key, info.duration_sec

@@ -522,7 +522,7 @@ git commit -m "feat(api): хранилище за протоколом Storage"
 
 **Interfaces:**
 - Consumes: `Settings` из Task 1
-- Produces: `AudioInfo` (dataclass: `duration_sec: float`, `sample_rate: int`, `channels: int`, `format: str`); `probe_audio(path: Path) -> AudioInfo`; исключение `UnsupportedAudio(Exception)`; фикстура `make_wav` в `conftest.py`.
+- Produces: `AudioInfo` (dataclass: `duration_sec: float`, `sample_rate: int`, `channels: int`, `format: str`); `probe_audio(path: Path) -> AudioInfo`; `normalize_format(container: str) -> str` (сводит семейство wav — `wav`/`wavex`/`rf64`/`w64` — к одному имени для проверки по `allowed_formats`); исключение `UnsupportedAudio(Exception)`; фикстура `make_wav` в `conftest.py`.
 
 - [ ] **Step 1: Написать общую фикстуру генерации аудио**
 
@@ -622,6 +622,22 @@ class UnsupportedAudio(Exception):
     """Файл не является читаемым аудио."""
 
 
+# libsndfile возвращает имя КОНТЕЙНЕРА, а allowed_formats — список
+# пользовательских форматов (по сути расширений). Для семейства wav это
+# разные словари: WAVEX — это WAVE_FORMAT_EXTENSIBLE, обычный .wav, который
+# штатно выдают многие редакторы и рекордеры; RF64 и W64 — те же данные RIFF
+# с 64-битными размерами для файлов свыше 4 ГБ. Все три libsndfile читает без
+# проблем, и обрабатываем мы их одинаково. Без сведения к одному имени сервис
+# отвечал «формат не поддерживается» на файл, который прекрасно умеет
+# обработать (замер на libsndfile 1.2.2: 'WAVEX' -> wavex -> 400).
+_WAV_FAMILY = frozenset({"wav", "wavex", "rf64", "w64"})
+
+
+def normalize_format(container: str) -> str:
+    """Свести имя контейнера от libsndfile к имени формата из политики."""
+    return "wav" if container in _WAV_FAMILY else container
+
+
 @dataclass(frozen=True)
 class AudioInfo:
     duration_sec: float
@@ -634,11 +650,15 @@ def probe_audio(path: Path) -> AudioInfo:
     """Разобрать аудиофайл по содержимому. Расширение игнорируется."""
     try:
         info = sf.info(str(path))
+        # Деление обязано быть внутри try: путь недоверенного ввода, и
+        # samplerate == 0 в заголовке дал бы ZeroDivisionError, то есть 500
+        # вместо честного 400 unsupported_format.
+        duration_sec = float(info.frames) / float(info.samplerate)
     except Exception as exc:
         raise UnsupportedAudio(str(exc)) from exc
 
     return AudioInfo(
-        duration_sec=float(info.frames) / float(info.samplerate),
+        duration_sec=duration_sec,
         sample_rate=int(info.samplerate),
         channels=int(info.channels),
         format=str(info.format).lower(),
@@ -1818,7 +1838,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if info.duration_sec > limits.max_duration_sec:
                 return _error("too_long")
 
-            if info.format not in limits.allowed_formats:
+            # info.format — имя контейнера от libsndfile, allowed_formats —
+            # список пользовательских форматов. Для семейства wav это разные
+            # словари, их надо свести, иначе обычный WAVEX-файл от редактора
+            # получает «формат не поддерживается».
+            fmt = normalize_format(info.format)
+            if fmt not in limits.allowed_formats:
                 # soundfile читает два десятка форматов сверх нашего списка
                 # (OGG, AIFF, CAF...). Читаемость — не то же самое, что
                 # разрешённость.
@@ -1827,7 +1852,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Идентификатор выдаётся до вставки: ключ строится из него, и
             # запись попадает в базу сразу целиком.
             track_id = new_id()
-            key = f"tracks/{track_id}/original.{info.format}"
+            key = f"tracks/{track_id}/original.{fmt}"
             state.storage.store_file(key, staged)
             state.store.create_track(
                 track_id, file.filename or "upload", key, info.duration_sec
