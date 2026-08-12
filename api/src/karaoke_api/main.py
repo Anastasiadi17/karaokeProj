@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .audio.probe import UnsupportedAudio, probe_audio
+from .cleanup import purge_expired
 from .config import Settings, get_settings
 from .deps import AppState
 from .jobs.store import new_id
@@ -33,14 +34,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if orphans:
             log.warning("помечено упавшими незавершённых задач: %d", orphans)
 
+        purge_expired(state.store, state.storage, settings.file_ttl_hours)
+
+        async def _cleanup_loop() -> None:
+            while True:
+                await asyncio.sleep(3600)
+                try:
+                    await asyncio.to_thread(
+                        purge_expired, state.store, state.storage,
+                        settings.file_ttl_hours,
+                    )
+                except Exception:
+                    log.exception("сбой автоочистки")
+
+        cleanup_task = asyncio.create_task(_cleanup_loop())
+
         task = asyncio.create_task(state.runner.run_forever())
         try:
             yield
         finally:
             state.runner.stop()
             task.cancel()
+            cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+            with contextlib.suppress(asyncio.CancelledError):
+                await cleanup_task
             state.store.close()
 
     app = FastAPI(title="Karaoke API", lifespan=lifespan)
@@ -135,6 +154,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media_type="audio/wav",
             headers=headers,
         )
+
+    @app.delete("/api/tracks/{track_id}", status_code=204)
+    async def delete_track(request: Request, track_id: str):
+        state: AppState = request.app.state.karaoke
+        if state.store.get_track(track_id) is None:
+            return _error("not_found", status=404)
+        state.storage.delete_prefix(f"tracks/{track_id}")
+        state.store.delete_track(track_id)
+        return Response(status_code=204)
 
     return app
 
