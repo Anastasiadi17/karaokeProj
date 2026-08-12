@@ -12,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27"]
+gpu = ["torch>=2.7", "torchaudio>=2.7", "demucs>=4.0.1"]
 
 [build-system]
 requires = ["hatchling"]
@@ -30,4 +31,12 @@ filterwarnings = [
     # Стороннее предупреждение из starlette.testclient, наш код его не вызывает.
     # Гасим точечно, чтобы настоящие предупреждения не тонули в шуме.
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+    # huggingface_hub предупреждает, что на этой машине не работают symlink'и
+    # в кеше (нужен Windows Developer Mode/админ) — тест test_demucs_slow.py
+    # качает веса htdemucs именно через него. С filterwarnings=error это
+    # предупреждение превращается в исключение внутри временной директории
+    # huggingface_hub, та не закрывается как положено, и позже сборщик
+    # мусора поднимает ResourceWarning об неявной уборке — pytest ловит его
+    # как unraisable exception и валит тест. Гасим первопричину точечно.
+    "ignore:`huggingface_hub` cache-system uses symlinks by default to efficiently store duplicated files but your machine does not support them:UserWarning",
 ]

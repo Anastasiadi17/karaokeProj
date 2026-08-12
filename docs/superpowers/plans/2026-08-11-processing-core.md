@@ -2531,10 +2531,25 @@ gpu = ["torch>=2.7", "torchaudio>=2.7", "demucs>=4.0.1"]
 
 Создать `api/src/karaoke_api/separation/demucs_local.py`:
 
+**Отступление от исходного текста (решение человека-партнёра, зафиксировано
+при выполнении задачи 12):** код ниже читает аудио через `torchaudio.load`.
+В установленной версии torchaudio (2.11) это больше не работает — вызов
+делегирует в `torchaudio.load_with_torchcodec`, который требует пакет
+`torchcodec`; ставить его не будем (падает
+`ImportError: TorchCodec is required for load_with_torchcodec`). Заменено на
+чтение через `soundfile` — он уже прямая зависимость проекта
+(`karaoke_api/audio/probe.py` читает им же). `soundfile.read` отдаёт
+`(frames, channels)`, поэтому нужна транспозиция в `(channels, frames)` и
+`dtype="float32"` с `always_2d=True`, чтобы моно не приезжало одномерным.
+`torchaudio.functional.resample` и запись через `demucs.audio.save_audio`
+остаются без изменений — это чистые тензорные операции и запись `.wav`
+собственным кодом demucs, кодеков не касаются.
+
 ```python
 import logging
 from pathlib import Path
 
+import soundfile as sf
 import torch
 import torchaudio
 from demucs.apply import apply_model
@@ -2544,6 +2559,13 @@ from demucs.pretrained import get_model
 from .base import ProgressCallback, SeparationResult
 
 log = logging.getLogger(__name__)
+
+
+def _load_wav(source: Path) -> tuple[torch.Tensor, int]:
+    """Прочитать аудио через soundfile, вернуть тензор (channels, frames)."""
+    data, sample_rate = sf.read(str(source), dtype="float32", always_2d=True)
+    wav = torch.from_numpy(data.T).contiguous()
+    return wav, sample_rate
 
 
 class DemucsSeparator:
@@ -2570,7 +2592,7 @@ class DemucsSeparator:
         on_progress("loading", 0.0)
         model = self._ensure_model()
 
-        wav, sample_rate = torchaudio.load(str(source))
+        wav, sample_rate = _load_wav(source)
         if wav.shape[0] == 1:
             wav = wav.repeat(2, 1)
         if sample_rate != model.samplerate:
@@ -2598,13 +2620,20 @@ class DemucsSeparator:
         sources = sources * (reference.std() + 1e-8) + reference.mean()
         stems = dict(zip(model.sources, sources))
 
-        on_progress("writing", 0.9)
         vocals_path = Path(out_dir) / "vocals.wav"
         no_vocals_path = Path(out_dir) / "no_vocals.wav"
 
         vocals = stems["vocals"]
         no_vocals = sum(t for name, t in stems.items() if name != "vocals")
 
+        # on_progress("writing", ...) — только здесь, а не до сборки стемов:
+        # инференс уже завершён и тензоры посчитаны, дальше только запись на
+        # диск. Раньше (как в первой версии этого блока) стадия "writing"
+        # сигналилась до сложения трёх тензоров в аккомпанемент — прогресс-бар
+        # был бы нечестным. Тот же порядок бага был в FakeSeparator (Task 4),
+        # там он безвреден: запись — это копирование файла, а не тяжёлая
+        # стадия.
+        on_progress("writing", 0.9)
         save_audio(vocals, str(vocals_path), model.samplerate)
         save_audio(no_vocals, str(no_vocals_path), model.samplerate)
 
@@ -2691,14 +2720,21 @@ Expected: PASS, медленный тест пропущен (`deselected`)
     py -3.12 -m venv .venv
     .venv/Scripts/python -m pip install -e ".[dev]"
     .venv/Scripts/python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-    .venv/Scripts/python -m pip install demucs
+    .venv/Scripts/python -m pip install -e ".[gpu]"
 
 Индекс `cu128` обязателен: RTX 5060 — архитектура Blackwell (sm_120), обычная
-сборка PyTorch на ней не запускается.
+сборка PyTorch на ней не запускается. Группа `gpu` из `pyproject.toml`
+допускает и уже проверенные версии (`torch 2.11.0+cu128`, `demucs 4.1.0`) —
+ставить torch/torchaudio отдельно нужно именно из-за индекса cu128, иначе
+встанет несовместимая CPU-сборка.
 
-Проверить GPU:
+Проверить GPU настоящим вычислением, а не только `is_available()` (см.
+`karaoke_api/gpu.py` — `zeros()` проходит и на несовместимой сборке, потому
+что заполнение нулями уходит в `cudaMemsetAsync`, а не в вычислительное ядро):
 
-    .venv/Scripts/python -c "import torch; print(torch.zeros(8, device='cuda'))"
+    .venv/Scripts/python -c "import torch; print((torch.ones(8, device='cuda') * 2).sum().item())"
+
+Ожидается `16.0`. Если падает с `no kernel image` — сборка не та, переустановить под индексом cu128.
 
 ## Запуск
 
