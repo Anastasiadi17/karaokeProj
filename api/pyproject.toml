@@ -25,3 +25,9 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 markers = ["slow: требует GPU и настоящую модель demucs"]
 addopts = "-m 'not slow'"
+filterwarnings = [
+    "error",
+    # Стороннее предупреждение из starlette.testclient, наш код его не вызывает.
+    # Гасим точечно, чтобы настоящие предупреждения не тонули в шуме.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
