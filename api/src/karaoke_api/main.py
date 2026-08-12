@@ -6,12 +6,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .audio.probe import UnsupportedAudio, probe_audio
 from .config import Settings, get_settings
 from .deps import AppState
 from .jobs.store import new_id
+from .ranges import parse_range
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +96,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "error": job.error_message,
             "result": job.result,
         }
+
+    _STEM_KINDS = ("vocals", "no_vocals")
+
+    @app.get("/api/tracks/{track_id}/stems/{kind}")
+    async def get_stem(request: Request, track_id: str, kind: str):
+        state: AppState = request.app.state.karaoke
+        if kind not in _STEM_KINDS:
+            return _error("not_found", status=404)
+
+        key = f"tracks/{track_id}/stems/{kind}.wav"
+        if not state.storage.exists(key):
+            return _error("not_found", status=404)
+
+        total = state.storage.size(key)
+        try:
+            rng = parse_range(request.headers.get("range"), total)
+        except ValueError:
+            return Response(
+                status_code=416, headers={"Content-Range": f"bytes */{total}"}
+            )
+
+        start, end = rng if rng else (0, total - 1)
+        length = end - start + 1
+
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+        }
+        if rng is not None:
+            headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+
+        # Дорожка весит десятки мегабайт: отдаём потоком, а не одним куском
+        # в памяти на каждый запрос.
+        return StreamingResponse(
+            state.storage.iter_range(key, start, length),
+            status_code=206 if rng else 200,
+            media_type="audio/wav",
+            headers=headers,
+        )
 
     return app
 
