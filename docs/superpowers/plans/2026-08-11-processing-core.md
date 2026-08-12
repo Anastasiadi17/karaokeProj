@@ -2196,8 +2196,15 @@ def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
 
     removed = 0
     for track_id in store.list_expired_tracks(cutoff):
-        storage.delete_prefix(f"tracks/{track_id}")
-        store.delete_track(track_id)
+        # delete_prefix пробрасывает ошибки (см. задачу 2). На Windows файл,
+        # открытый работающей задачей, не удалится — и без этой обёртки один
+        # такой трек оборвал бы весь проход уборки.
+        try:
+            storage.delete_prefix(f"tracks/{track_id}")
+            store.delete_track(track_id)
+        except Exception:
+            log.exception("не удалось удалить трек %s, продолжаю", track_id)
+            continue
         removed += 1
 
     if removed:
@@ -2228,10 +2235,15 @@ def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
         async def _cleanup_loop() -> None:
             while True:
                 await asyncio.sleep(3600)
-                await asyncio.to_thread(
-                    purge_expired, state.store, state.storage,
-                    settings.file_ttl_hours,
-                )
+                # Как и цикл обработки: одно вылетевшее исключение иначе
+                # навсегда останавливает уборку при живом HTTP.
+                try:
+                    await asyncio.to_thread(
+                        purge_expired, state.store, state.storage,
+                        settings.file_ttl_hours,
+                    )
+                except Exception:
+                    log.exception("сбой автоочистки")
 
         cleanup_task = asyncio.create_task(_cleanup_loop())
 ```
