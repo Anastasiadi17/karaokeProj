@@ -12,6 +12,7 @@ from .audio.probe import UnsupportedAudio, probe_audio
 from .cleanup import purge_expired
 from .config import Settings, get_settings
 from .deps import AppState
+from .gpu import check_gpu
 from .jobs.store import new_id
 from .ranges import parse_range
 
@@ -35,6 +36,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("помечено упавшими незавершённых задач: %d", orphans)
 
         purge_expired(state.store, state.storage, settings.file_ttl_hours)
+
+        gpu = check_gpu()
+        app.state.gpu = gpu
+        if gpu.available:
+            log.info("GPU готов: %s", gpu.device_name)
+        else:
+            log.warning("GPU недоступен (%s). Обработка пойдёт на CPU и будет "
+                        "в десятки раз медленнее. %s", gpu.reason, gpu.hint)
 
         async def _cleanup_loop() -> None:
             while True:
@@ -163,6 +172,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state.storage.delete_prefix(f"tracks/{track_id}")
         state.store.delete_track(track_id)
         return Response(status_code=204)
+
+    @app.get("/api/health")
+    async def health(request: Request):
+        gpu = request.app.state.gpu
+        return {
+            "gpu": {
+                "available": gpu.available,
+                "device_name": gpu.device_name,
+                "reason": gpu.reason,
+                "hint": gpu.hint,
+            },
+            "separator": settings.separator,
+        }
 
     return app
 
