@@ -146,6 +146,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if kind not in _STEM_KINDS:
             return _error("not_found", status=404)
 
+        # Хранилище — не источник истины о том, что трек существует. Файлы
+        # могут пережить удаление строки (гонка с работающей задачей, сбой
+        # уборки), и отдавать их после этого нельзя: для клиента трек удалён.
+        if state.store.get_track(track_id) is None:
+            return _error("not_found", status=404)
+
         key = f"tracks/{track_id}/stems/{kind}.wav"
         if not state.storage.exists(key):
             return _error("not_found", status=404)

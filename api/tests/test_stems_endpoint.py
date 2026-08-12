@@ -63,3 +63,19 @@ def test_unknown_kind_is_404(client, ready_track):
 
 def test_unknown_track_is_404(client):
     assert client.get("/api/tracks/nope/stems/vocals").status_code == 404
+
+
+def test_stem_of_deleted_track_is_404_even_if_file_survives(client, ready_track):
+    """Хранилище — не источник истины. Файлы могут пережить удаление строки
+    (гонка с работающей задачей, сбой уборки), но для клиента трек удалён."""
+    state = client.app.state.karaoke
+    key = f"tracks/{ready_track}/stems/no_vocals.wav"
+    assert state.storage.exists(key)
+
+    # Только строка в базе — файл намеренно оставляем на диске.
+    state.store.delete_track(ready_track)
+    assert state.storage.exists(key), "тест бессмыслен, если файла уже нет"
+
+    response = client.get(f"/api/tracks/{ready_track}/stems/no_vocals")
+    assert response.status_code == 404
+    assert response.json()["error"] == "not_found"

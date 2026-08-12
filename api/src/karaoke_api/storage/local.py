@@ -1,4 +1,7 @@
+import contextlib
+import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Iterator
 
@@ -20,9 +23,26 @@ class LocalStorage:
         return path
 
     def store_file(self, key: str, src: Path) -> None:
+        """Положить файл под ключом. Ключ появляется целиком или не появляется.
+
+        Копирование прямо в целевой путь означало бы, что клиент, запросивший
+        дорожку в момент записи, получит частично записанный WAV с кодом 200
+        и Content-Length, снятым в гонке. Поэтому копия ложится рядом во
+        временный файл, а os.replace переставляет её атомарно — в том числе
+        на Windows.
+        """
         dest = self._resolve(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dest)
+        # Суффикс уникален: два одновременных store_file на один ключ не
+        # должны дописывать друг другу один и тот же временный файл.
+        tmp = dest.with_name(f"{dest.name}.{uuid.uuid4().hex}.part")
+        try:
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dest)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
 
     def materialize(self, key: str, dest_dir: Path) -> Path:
         src = self._resolve(key)
