@@ -49,14 +49,38 @@ describe("pollUntilSettled", () => {
     expect(getJob).toHaveBeenCalledTimes(1);
   });
 
-  it("пробрасывает ошибку сети", async () => {
+  it("сдаётся после нескольких подряд ошибок сети", async () => {
     const getJob = vi.fn(async () => {
       throw new Error("сеть недоступна");
     });
 
-    const promise = pollUntilSettled(getJob, 10, () => {});
+    const promise = pollUntilSettled(getJob, 10, () => {}, 3);
     await vi.runAllTimersAsync();
 
     await expect(promise).rejects.toThrow("сеть недоступна");
+    expect(getJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("переживает одиночный сбой посреди обработки", async () => {
+    // Разделение идёт десятки секунд: один не дошедший ответ — не повод
+    // объявлять человеку, что связь потеряна, когда задача считается дальше.
+    const script: (JobState | Error)[] = [
+      state({ status: "running", progress: 0.3 }),
+      new Error("сеть моргнула"),
+      state({ status: "done", progress: 1 }),
+    ];
+    const getJob = vi.fn(async () => {
+      const next = script.shift()!;
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    const seen: JobState[] = [];
+
+    const promise = pollUntilSettled(getJob, 10, (s) => seen.push(s));
+    await vi.runAllTimersAsync();
+    const final = await promise;
+
+    expect(final.status).toBe("done");
+    expect(seen).toHaveLength(2);
   });
 });

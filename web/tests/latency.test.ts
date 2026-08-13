@@ -90,7 +90,12 @@ describe("хранение смещения", () => {
     storage = new MemoryStorage();
   });
 
-  it("возвращает ноль, если ничего не сохранено", () => {
+  it("отвечает null, если ничего не сохранено", () => {
+    expect(loadOffset(storage)).toBeNull();
+  });
+
+  it("сохранённый ноль отличается от «не сохраняли»", () => {
+    saveOffset(storage, 0);
     expect(loadOffset(storage)).toBe(0);
   });
 
@@ -108,6 +113,6 @@ describe("хранение смещения", () => {
 
   it("игнорирует испорченное значение", () => {
     storage.setItem("karaoke.latencyOffsetSec", "не число");
-    expect(loadOffset(storage)).toBe(0);
+    expect(loadOffset(storage)).toBeNull();
   });
 });

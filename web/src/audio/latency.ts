@@ -42,17 +42,24 @@ export function shiftSamples(
   return out;
 }
 
-function clamp(sec: number): number {
+export function clampOffset(sec: number): number {
   return Math.max(MIN_OFFSET_SEC, Math.min(MAX_OFFSET_SEC, sec));
 }
 
-export function loadOffset(storage: Storage): number {
+/**
+ * Сохранённое смещение или `null`, если его не сохраняли.
+ *
+ * Отличать «не сохраняли» от сохранённого нуля обязательно: ноль — законная
+ * настройка (звуковая карта без заметной задержки), и подменять его оценкой
+ * значит молча ломать то, что человек выставил руками.
+ */
+export function loadOffset(storage: Storage): number | null {
   const raw = storage.getItem(STORAGE_KEY);
-  if (raw === null) return 0;
+  if (raw === null) return null;
   const parsed = Number.parseFloat(raw);
-  return Number.isFinite(parsed) ? clamp(parsed) : 0;
+  return Number.isFinite(parsed) ? clampOffset(parsed) : null;
 }
 
 export function saveOffset(storage: Storage, sec: number): void {
-  storage.setItem(STORAGE_KEY, String(clamp(sec)));
+  storage.setItem(STORAGE_KEY, String(clampOffset(sec)));
 }

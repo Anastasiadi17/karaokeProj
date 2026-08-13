@@ -138,6 +138,42 @@ describe("mixdown", () => {
     expect(peak).toBeGreaterThan(0.01);
   });
 
+  it("перегруженное сведение не выходит за полную шкалу", async () => {
+    // Щелчок в музыке и щелчок в голосе в одной точке, оба усиления на
+    // максимуме ползунка: сумма заведомо больше единицы.
+    const music = clickBuffer(1.0, 2);
+    const voice = clickChannels(1.0, 2);
+
+    const mixed = await mixdown(music, voice, SR, {
+      ...BASE,
+      voiceGain: 2,
+      musicGain: 2,
+    });
+
+    const data = mixed.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < data.length; i += 1) {
+      peak = Math.max(peak, Math.abs(data[i]));
+    }
+
+    expect(peak).toBeLessThanOrEqual(1);
+    expect(peak).toBeGreaterThan(0.9);
+  });
+
+  it("не трогает сведение, которое и так в шкале", async () => {
+    const music = clickBuffer(1.0, 2);
+    const voice = clickChannels(1.5, 2);
+
+    const mixed = await mixdown(music, voice, SR, {
+      ...BASE,
+      voiceGain: 0.5,
+      musicGain: 0.5,
+    });
+
+    const data = mixed.getChannelData(0);
+    expect(data[Math.round(SR * 1.5)]).toBeCloseTo(0.5, 3);
+  });
+
   it("bufferToChannels отдаёт независимые копии", () => {
     const buffer = clickBuffer(1.0);
     const channels = bufferToChannels(buffer);

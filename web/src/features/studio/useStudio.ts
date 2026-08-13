@@ -4,6 +4,7 @@ import type { ApiClient } from "../../api/client";
 import { downloadBlob } from "../../audio/download";
 import { encodeWav } from "../../audio/encode";
 import {
+  clampOffset,
   estimateLatencySec,
   loadOffset,
   saveOffset,
@@ -23,19 +24,28 @@ export function useStudio(client: ApiClient, trackId: string) {
   const streamRef = useRef<MediaStream | null>(null);
   const playbackRef = useRef<AudioBufferSourceNode | null>(null);
   const takeRef = useRef<Samples[] | null>(null);
+  // Смещение, выставленное человеком или взятое из хранилища, оценка контекста
+  // перебивать не имеет права.
+  const offsetIsSetRef = useRef(false);
+  // Доля реверба нужна и до создания монитора: узлы рождаются позже, чем
+  // человек может подвинуть ползунок.
+  const reverbWetRef = useRef(0.25);
 
   const [ready, setReady] = useState(false);
   const [recording, setRecording] = useState(false);
   const [mixing, setMixing] = useState(false);
   const [hasTake, setHasTake] = useState(false);
+  /** Сбой подготовки: студии нет и не будет, показывать нечего. */
   const [error, setError] = useState<string | null>(null);
+  /** Поправимая беда: студия на месте, дубль цел, можно попробовать снова. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [levelDb, setLevelDb] = useState(-120);
   const [clipped, setClipped] = useState(false);
 
   const [offsetSec, setOffsetSecState] = useState(0);
   const [voiceGain, setVoiceGain] = useState(1);
   const [musicGain, setMusicGain] = useState(0.8);
-  const [reverbWet, setReverbWet] = useState(0.25);
+  const [reverbWet, setReverbWetState] = useState(0.25);
   const [monitorOn, setMonitorOnState] = useState(false);
 
   useEffect(() => {
@@ -53,6 +63,12 @@ export function useStudio(client: ApiClient, trackId: string) {
       // длине песни и голос медленно уползает.
       const ctx = new AudioContext({ sampleRate: decoded.sampleRate });
       await ctx.audioWorklet.addModule("/recorder-worklet.js");
+      if (cancelled) {
+        // Ушли с экрана, пока грузился воркет. Незакрытый контекст остаётся
+        // навсегда, а больше полудюжины их браузер не даёт создать.
+        void ctx.close();
+        return;
+      }
 
       ctxRef.current = ctx;
       musicRef.current = decoded;
@@ -60,8 +76,15 @@ export function useStudio(client: ApiClient, trackId: string) {
       monitorRef.current = new Monitor(ctx);
       meterRef.current = new LevelMeter(ctx);
 
+      monitorRef.current.setWet(reverbWetRef.current);
+
       const stored = loadOffset(window.localStorage);
-      setOffsetSecState(stored || estimateLatencySec(ctx));
+      if (stored !== null) {
+        offsetIsSetRef.current = true;
+        setOffsetSecState(stored);
+      } else {
+        setOffsetSecState(clampOffset(estimateLatencySec(ctx)));
+      }
       setReady(true);
     })().catch((exc: unknown) => {
       if (cancelled) return;
@@ -83,8 +106,17 @@ export function useStudio(client: ApiClient, trackId: string) {
   }, [client, trackId]);
 
   const setOffsetSec = useCallback((sec: number) => {
+    offsetIsSetRef.current = true;
     setOffsetSecState(sec);
     saveOffset(window.localStorage, sec);
+  }, []);
+
+  const setReverbWet = useCallback((value: number) => {
+    // Наушники должны звучать так же, как будет звучать файл: иначе певец
+    // подбирает эффект на слух и получает в экспорте другой.
+    monitorRef.current?.setWet(value);
+    reverbWetRef.current = value;
+    setReverbWetState(value);
   }, []);
 
   const setMonitorOn = useCallback((on: boolean) => {
@@ -122,6 +154,16 @@ export function useStudio(client: ApiClient, trackId: string) {
       // обработчика нажатия — единственное место, где его пускают.
       if (ctx.state !== "running") await ctx.resume();
 
+      // `outputLatency` до первого рендера равен нулю: контекст создаётся при
+      // входе на экран, а поднимается только здесь. Оценка, снятая раньше,
+      // давала единицы миллисекунд вместо настоящих сорока и выше.
+      if (!offsetIsSetRef.current) {
+        const estimated = clampOffset(estimateLatencySec(ctx));
+        if (estimated > 0) setOffsetSecState(estimated);
+      }
+
+      setNotice(null);
+
       const stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
       streamRef.current = stream;
 
@@ -146,9 +188,11 @@ export function useStudio(client: ApiClient, trackId: string) {
 
       setRecording(true);
     } catch {
-      setError(
-        "Нет доступа к микрофону. Разрешите его в настройках браузера и " +
-          "перезагрузите страницу.",
+      // Не `error`: студия цела и предыдущий дубль тоже. Человек разрешает
+      // микрофон или закрывает программу, которая его держит, и жмёт снова.
+      setNotice(
+        "Нет доступа к микрофону. Разрешите его в настройках браузера или " +
+          "закройте программу, которая его заняла, и нажмите «Записать» снова.",
       );
     }
   }, [stopRecording]);
@@ -159,6 +203,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     if (!music || !take) return;
 
     setMixing(true);
+    setNotice(null);
     try {
       const mixed = await mixdown(music, take, music.sampleRate, {
         offsetSec,
@@ -172,6 +217,12 @@ export function useStudio(client: ApiClient, trackId: string) {
         Float32Array.from(mixed.getChannelData(ch)),
       );
       downloadBlob(encodeWav(channels, mixed.sampleRate), "karaoke-mix.wav");
+    } catch {
+      // Молчащая кнопка хуже ошибки: человек жмёт её снова и снова.
+      setNotice(
+        "Не удалось свести микс. Попробуйте ещё раз; если повторяется — " +
+          "перезапишите дубль покороче.",
+      );
     } finally {
       setMixing(false);
     }
@@ -203,6 +254,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     mixing,
     hasTake,
     error,
+    notice,
     levelDb,
     clipped,
     offsetSec,

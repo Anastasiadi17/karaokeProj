@@ -90,5 +90,35 @@ export async function mixdown(
     markSource.start();
   }
 
-  return ctx.startRendering();
+  const rendered = await ctx.startRendering();
+  return limitToFullScale(rendered);
+}
+
+/**
+ * Убирает перегрузку сведения, если она случилась.
+ *
+ * Голос и минусовка складываются с усилением до 2,0 каждый, сверху уходит
+ * реверб и водяной знак — сумма легко выходит за единицу. Дальше её всё равно
+ * зажмёт кодировщик, но зажмёт грязно: щелчками, ровно теми, о которых
+ * приложение честно предупреждает на входе. Поэтому весь микс тише ровно
+ * настолько, насколько вылез пик, и не тише: громкость — дело ползунков.
+ */
+function limitToFullScale(buffer: AudioBuffer): AudioBuffer {
+  let peak = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch += 1) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < data.length; i += 1) {
+      const value = Math.abs(data[i]);
+      if (value > peak) peak = value;
+    }
+  }
+
+  if (peak <= 1) return buffer;
+
+  const gain = 1 / peak;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch += 1) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < data.length; i += 1) data[i] *= gain;
+  }
+  return buffer;
 }

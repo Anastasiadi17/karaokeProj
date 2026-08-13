@@ -34,10 +34,12 @@ test("дубль не теряется, когда минусовка доигр
   await page.getByRole("button", { name: "Записать" }).click();
 
   // Минусовка длится три секунды. Ждём, пока она кончится сама, и НЕ жмём
-  // «Остановить»: так поёт человек, спевший песню до конца.
-  await expect(page.getByRole("button", { name: "Записать" })).toBeVisible({
-    timeout: 15_000,
-  });
+  // «Остановить»: так поёт человек, спевший песню до конца. Сначала надо
+  // дождаться самой кнопки «Остановить» — иначе первая же проверка увидит
+  // экран до перерисовки и пройдёт, ничего не подождав.
+  const stopButton = page.getByRole("button", { name: "Остановить" });
+  await expect(stopButton).toBeVisible();
+  await expect(stopButton).toBeHidden({ timeout: 15_000 });
 
   await expect(page.getByRole("button", { name: "Скачать микс" })).toBeEnabled();
 });

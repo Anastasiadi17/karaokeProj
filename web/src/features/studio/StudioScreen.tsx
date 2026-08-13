@@ -25,12 +25,17 @@ export function StudioScreen({
           <button onClick={() => void s.startRecording()}>Записать</button>
         )}
         <button
-          disabled={!s.hasTake || s.mixing}
+          disabled={!s.hasTake || s.mixing || s.recording}
           onClick={() => void s.exportMix()}
         >
           {s.mixing ? "Свожу…" : "Скачать микс"}
         </button>
       </div>
+
+      {/* Поправимая беда показывается рядом со студией, а не вместо неё:
+          записанный дубль живёт в памяти вкладки, и снести экран из-за
+          занятого микрофона значит потерять его. */}
+      {s.notice && <p role="alert">{s.notice}</p>}
 
       {s.recording && (
         <div>

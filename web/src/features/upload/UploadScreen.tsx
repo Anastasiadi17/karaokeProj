@@ -45,6 +45,10 @@ export function UploadScreen({
         disabled={busy}
         onChange={(event) => {
           const file = event.target.files?.[0];
+          // Значение сбрасывается сразу: иначе повторный выбор того же файла
+          // не даёт события, и совет «попробуйте ещё раз» после сорвавшейся
+          // отправки невыполним — остаётся только перезагрузить страницу.
+          event.target.value = "";
           if (file) void handleFile(file);
         }}
       />
