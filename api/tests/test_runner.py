@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import sqlite3
 import time
 
@@ -312,3 +313,52 @@ def test_warmup_runs_before_the_first_job_is_claimed(tmp_path, monkeypatch,
         f"первым вызовом был не прогрев: {separator.calls}"
     )
     assert "separate" in separator.calls
+
+
+class DeletingOnMaterializeStorage:
+    """Удаляет трек ровно тогда, когда воркер идёт за исходником.
+
+    Воспроизводит DELETE, попавший между claim_next и materialize: задача
+    уже взята в работу, а файла под ней больше нет. Замок этот случай не
+    закрывает намеренно — копирование исходника в критическую секцию не
+    входит, иначе DELETE ждал бы всю обработку.
+    """
+
+    def __init__(self, inner, store, track_id):
+        self._inner = inner
+        self._store = store
+        self._track_id = track_id
+
+    def materialize(self, key, dest_dir):
+        self._inner.delete_prefix(f"tracks/{self._track_id}")
+        self._store.delete_track(self._track_id)
+        return self._inner.materialize(key, dest_dir)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_delete_during_processing_is_logged_without_traceback(wiring, caplog):
+    """Удаление трека во время обработки — штатное действие пользователя.
+
+    Полный traceback на него превращает лог в шум и топит в нём настоящие
+    сбои, на которые действительно надо смотреть.
+    """
+    store, storage, work, track_id = wiring
+    store.create_job(track_id)
+    vanishing = DeletingOnMaterializeStorage(storage, store, track_id)
+
+    runner = JobRunner(store, vanishing, FakeSeparator(), work)
+    with caplog.at_level(logging.INFO, logger="karaoke_api.jobs.runner"):
+        assert runner.run_once() is True
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors == [], (
+        f"штатное удаление залогировано как сбой: "
+        f"{[r.getMessage() for r in errors]}"
+    )
+    assert any("удалён во время обработки" in r.getMessage()
+               for r in caplog.records), (
+        f"нет внятного сообщения о причине: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )

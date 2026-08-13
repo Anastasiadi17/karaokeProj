@@ -133,7 +133,15 @@ class JobRunner:
                     job.id, {"stems": stems, "degraded": result.degraded}
                 )
         except Exception as exc:
-            log.exception("задача %s упала", job.id)
+            if self._track_is_gone(job.track_id):
+                # Трек удалили, пока задача считалась: исходник исчез из-под
+                # materialize. Это штатное действие пользователя, а не сбой
+                # сервиса — полный traceback здесь только зашумляет лог и
+                # топит в нём настоящие сбои.
+                log.info("трек %s удалён во время обработки, задача "
+                         "прервана: %s", job.track_id, exc)
+            else:
+                log.exception("задача %s упала", job.id)
             try:
                 self._store.fail(job.id, f"{type(exc).__name__}: {exc}")
             except Exception:
@@ -146,6 +154,18 @@ class JobRunner:
             shutil.rmtree(scratch, ignore_errors=True)
 
         return True
+
+    def _track_is_gone(self, track_id: str) -> bool:
+        """Пропал ли трек из базы — для классификации сбоя задачи.
+
+        При выключении соединение с базой может быть уже закрыто, и сам этот
+        вопрос бросит исключение. Тогда честнее считать трек живым: лишний
+        traceback дешевле проглоченного настоящего сбоя.
+        """
+        try:
+            return self._store.get_track(track_id) is None
+        except Exception:
+            return False
 
     def stop(self) -> None:
         self._stopped = True
