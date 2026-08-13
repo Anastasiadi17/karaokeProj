@@ -60,5 +60,5 @@ export default function App() {
     );
   }
 
-  return <StudioScreen client={client} trackId={trackId!} />;
+  return <StudioScreen client={client} trackId={trackId!} plan={me.plan} />;
 }

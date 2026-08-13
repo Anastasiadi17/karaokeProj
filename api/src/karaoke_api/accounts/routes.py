@@ -5,6 +5,7 @@
 человека, читающего лог, и для теста, который берёт из неё ссылку.
 """
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..config import Settings
+from .billing import BadSignature, apply_event, verify_signature
 from .store import User, normalize_email
 
 log = logging.getLogger(__name__)
@@ -101,6 +103,33 @@ def build_router(settings: Settings) -> APIRouter:
         response.delete_cookie(SESSION_COOKIE)
         return response
 
+    @router.post("/api/billing/webhook")
+    async def stripe_webhook(request: Request):
+        """Единственный источник правды о подписке."""
+        if not settings.stripe_webhook_secret:
+            return _error("billing_not_configured", status=503)
+
+        payload = await request.body()
+        try:
+            verify_signature(payload, request.headers.get("stripe-signature", ""),
+                             settings.stripe_webhook_secret)
+        except BadSignature as exc:
+            # 400, а не 401: для Stripe это сигнал не повторять доставку.
+            log.warning("вебхук с плохой подписью: %s", exc)
+            return _error("bad_signature", status=400)
+
+        event = json.loads(payload.decode("utf-8"))
+        event_id = event.get("id")
+        accounts = request.app.state.karaoke.accounts
+
+        # Идемпотентность: Stripe доставляет повторно после любого нашего
+        # таймаута, и второй раз включать подписку нельзя.
+        if event_id and not accounts.remember_event(event_id):
+            return Response(status_code=200)
+
+        apply_event(accounts, event)
+        return Response(status_code=200)
+
     @router.get("/api/me")
     async def me(request: Request):
         user = current_user(request)
@@ -111,9 +140,7 @@ def build_router(settings: Settings) -> APIRouter:
         used = accounts.count_operations(user.id, month_start())
         return {
             "email": user.email,
-            # Подписок ещё нет; поле существует, чтобы интерфейс не
-            # переписывался, когда они появятся.
-            "plan": "free",
+            "plan": accounts.plan_for(user.id),
             "operations_used": used,
             "operations_limit": settings.free_monthly_operations,
         }

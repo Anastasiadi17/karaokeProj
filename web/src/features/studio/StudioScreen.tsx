@@ -5,11 +5,13 @@ import { useStudio } from "./useStudio";
 export function StudioScreen({
   client,
   trackId,
+  plan,
 }: {
   client: ApiClient;
   trackId: string;
+  plan: "free" | "pro";
 }) {
-  const s = useStudio(client, trackId);
+  const s = useStudio(client, trackId, plan);
 
   if (s.error) return <p role="alert">{s.error}</p>;
   if (!s.ready) return <p>Готовлю студию…</p>;
@@ -37,6 +39,13 @@ export function StudioScreen({
           {s.mixing ? "Свожу…" : "Скачать микс"}
         </button>
       </div>
+
+      {plan === "free" && (
+        <p>
+          В бесплатном экспорте есть короткий сигнал каждые полминуты. На Pro
+          его нет.
+        </p>
+      )}
 
       {/* Поправимая беда показывается рядом со студией, а не вместо неё:
           записанный дубль живёт в памяти вкладки, и снести экран из-за

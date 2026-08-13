@@ -181,3 +181,27 @@ describe("mixdown", () => {
     expect(buffer.getChannelData(0)[0]).toBe(0);
   });
 });
+
+describe("водяной знак и тариф", () => {
+  it("на Pro экспорт идёт без знака", async () => {
+    // Проверяется сам движок: знак — это опция сведения, а не отдельный
+    // путь. Решение о ней принимает интерфейс по плану из сессии.
+    const silence = new OfflineAudioContext(2, SR * 2, SR).createBuffer(
+      2,
+      SR * 2,
+      SR,
+    );
+    const voice = [new Float32Array(SR * 2), new Float32Array(SR * 2)];
+
+    const clean = await mixdown(silence, voice, SR, {
+      ...BASE,
+      watermark: false,
+    });
+
+    const data = clean.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < SR * 0.3; i += 1)
+      peak = Math.max(peak, Math.abs(data[i]));
+    expect(peak).toBe(0);
+  });
+});

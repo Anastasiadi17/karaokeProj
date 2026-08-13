@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS operations (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id            TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    plan               TEXT NOT NULL,
+    status             TEXT NOT NULL,
+    current_period_end TEXT,
+    stripe_subscription_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS webhook_events (
+    stripe_event_id TEXT PRIMARY KEY,
+    received_at     TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_operations_user
     ON operations(user_id, created_at);
 """
@@ -223,6 +236,71 @@ class AccountStore:
                 "DELETE FROM sessions WHERE token_hash = ?", (_hash_token(raw),)
             )
             self._conn.commit()
+
+    # --- подписки ---------------------------------------------------
+
+    def set_subscription(self, user_id: str, plan: str, status: str,
+                         current_period_end: datetime | None = None,
+                         stripe_subscription_id: str | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO subscriptions (user_id, plan, status,"
+                " current_period_end, stripe_subscription_id)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan,"
+                " status = excluded.status,"
+                " current_period_end = excluded.current_period_end,"
+                " stripe_subscription_id = excluded.stripe_subscription_id",
+                (user_id, plan, status,
+                 current_period_end.isoformat() if current_period_end else None,
+                 stripe_subscription_id),
+            )
+            self._conn.commit()
+
+    def plan_for(self, user_id: str) -> str:
+        """Что человеку доступно прямо сейчас.
+
+        Отменённая подписка живёт до конца оплаченного периода — деньги за
+        него взяты. Просроченная превращается в `free` сама, без фоновой
+        задачи: срок проверяется в момент вопроса.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT plan, status, current_period_end FROM subscriptions"
+                " WHERE user_id = ?", (user_id,),
+            ).fetchone()
+        if row is None or row["plan"] != "pro":
+            return "free"
+        if row["status"] not in ("active", "trialing", "canceled"):
+            return "free"
+        end = row["current_period_end"]
+        if end is not None and _parse_dt(end) <= _now():
+            return "free"
+        return "pro"
+
+    def remember_event(self, event_id: str) -> bool:
+        """True, если событие видим впервые. Stripe доставляет повторно."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO webhook_events (stripe_event_id, received_at)"
+                    " VALUES (?, ?)", (event_id, _now().isoformat()),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def user_by_email(self, email: str) -> User | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM users WHERE email = ?",
+                (normalize_email(email),),
+            ).fetchone()
+        if row is None:
+            return None
+        return User(id=row["id"], email=row["email"],
+                    created_at=_parse_dt(row["created_at"]))
 
     # --- операции --------------------------------------------------------
 

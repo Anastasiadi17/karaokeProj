@@ -17,7 +17,17 @@ import type { Playback } from "../../audio/playback";
 import { MIC_CONSTRAINTS, Recorder } from "../../audio/recorder";
 import type { Samples } from "../../audio/samples";
 
-export function useStudio(client: ApiClient, trackId: string) {
+/**
+ * @param plan Тариф из сессии. От него зависит водяной знак в экспорте.
+ *   Решение исполняет клиент, и подделать его через DevTools можно — это
+ *   записано в дизайне подсистемы C как сознательно необеспеченная защита:
+ *   сведение обязано остаться в браузере, иначе рушится юнит-экономика.
+ */
+export function useStudio(
+  client: ApiClient,
+  trackId: string,
+  plan: "free" | "pro" = "free",
+) {
   const ctxRef = useRef<AudioContext | null>(null);
   const musicRef = useRef<AudioBuffer | null>(null);
   const recorderRef = useRef<Recorder | null>(null);
@@ -231,9 +241,9 @@ export function useStudio(client: ApiClient, trackId: string) {
       voiceGain,
       musicGain,
       reverbWet,
-      watermark: true,
+      watermark: plan !== "pro",
     });
-  }, [offsetSec, voiceGain, musicGain, reverbWet]);
+  }, [offsetSec, voiceGain, musicGain, reverbWet, plan]);
 
   const previewMix = useCallback(async () => {
     const ctx = ctxRef.current;
