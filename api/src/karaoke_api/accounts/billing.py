@@ -127,3 +127,73 @@ def _user_by_subscription(accounts, subscription_id: str) -> str | None:
             (subscription_id,),
         ).fetchone()
     return row["user_id"] if row else None
+
+
+# --- создание сессии оплаты ------------------------------------------
+#
+# ВНИМАНИЕ: этот кусок НИКОГДА не выполнялся против настоящего Stripe —
+# ключей и сети к ним в среде разработки нет. Тесты проверяют всё до
+# отправки (какие поля уходят, что возвращается, как ведём себя на ошибке),
+# но принимает ли Stripe именно такой запрос, знает только первый живой
+# вызов. Что проверить с тестовым ключом:
+#   1. Форма `line_items[0][price]` — Stripe ждёт именно скобочный синтаксис.
+#   2. `mode=subscription` требует, чтобы price был recurring.
+#   3. `client_reference_id` возвращается в вебхуке — на него можно
+#      опереться вместо адреса почты, если адрес в Checkout поменяли.
+
+STRIPE_API = "https://api.stripe.com/v1/checkout/sessions"
+
+
+class StripeError(Exception):
+    pass
+
+
+def _post_form(url: str, data: dict[str, str], secret_key: str) -> dict:
+    """Отдельной функцией, чтобы тест мог подменить её целиком.
+
+    Библиотека `stripe` сюда не тащится: один POST формой не стоит ещё одной
+    зависимости в образе, который и так весит гигабайты из-за торча.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    request = urllib.request.Request(
+        url,
+        data=urllib.parse.urlencode(data).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return _json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        raise StripeError(f"HTTP {exc.code}: {body[:500]}") from exc
+    except urllib.error.URLError as exc:
+        raise StripeError(f"сеть: {exc.reason}") from exc
+
+
+def create_checkout_session(secret_key: str, price_id: str, user_id: str,
+                            email: str, base_url: str,
+                            post=_post_form) -> str:
+    """Возвращает адрес, куда отправить человека платить."""
+    data = {
+        "mode": "subscription",
+        "line_items[0][price]": price_id,
+        "line_items[0][quantity]": "1",
+        # Адрес подставляется, но человек может его в Checkout поменять,
+        # поэтому опознаём по client_reference_id — он приходит в вебхуке.
+        "customer_email": email,
+        "client_reference_id": user_id,
+        "success_url": f"{base_url}/?paid=1",
+        "cancel_url": f"{base_url}/",
+    }
+    body = post(STRIPE_API, data, secret_key)
+    url = body.get("url")
+    if not url:
+        raise StripeError(f"ответ без url: {str(body)[:200]}")
+    return url

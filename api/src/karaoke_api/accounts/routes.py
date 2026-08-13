@@ -5,6 +5,7 @@
 человека, читающего лог, и для теста, который берёт из неё ссылку.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -14,7 +15,8 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..config import Settings
-from .billing import BadSignature, apply_event, verify_signature
+from . import billing
+from .billing import BadSignature, StripeError, apply_event, verify_signature
 from .store import User, normalize_email
 
 log = logging.getLogger(__name__)
@@ -102,6 +104,34 @@ def build_router(settings: Settings) -> APIRouter:
         response = Response(status_code=204)
         response.delete_cookie(SESSION_COOKIE)
         return response
+
+    @router.post("/api/billing/checkout")
+    async def start_checkout(request: Request):
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+
+        if not settings.stripe_secret_key or not settings.stripe_price_id:
+            return _error("billing_not_configured", status=503)
+
+        try:
+            # В отдельный поток: обращение к чужому серверу не должно
+            # вставать поперёк событийного цикла.
+            url = await asyncio.to_thread(
+                # Через модуль, а не по имени: иначе подмена в тесте не
+                # доходит до вызова, и тест «сбой Stripe даёт 502» зеленеет
+                # по случайности — на настоящей ошибке сети.
+                billing.create_checkout_session,
+                settings.stripe_secret_key, settings.stripe_price_id,
+                user.id, user.email, settings.public_base_url,
+            )
+        except StripeError:
+            # Подробности — в лог, наружу только факт: тексты чужого API
+            # человеку ничего не объясняют.
+            log.exception("Stripe не отдал сессию оплаты")
+            return _error("billing_unavailable", status=502)
+
+        return {"url": url}
 
     @router.post("/api/billing/webhook")
     async def stripe_webhook(request: Request):

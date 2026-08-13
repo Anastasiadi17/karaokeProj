@@ -52,6 +52,26 @@ export function UploadScreen({
         из {me.operations_limit} треков в этом месяце{" "}
         <button onClick={onLogout}>Выйти</button>
       </p>
+      {me.plan === "free" && (
+        <p>
+          <button
+            onClick={async () => {
+              try {
+                // Уходим на страницу Stripe целиком: собирать форму оплаты
+                // у себя значит попасть в периметр PCI без всякой нужды.
+                window.location.href = await client.startCheckout();
+              } catch {
+                setError(
+                  "Оплата сейчас недоступна. Попробуйте позже — на " +
+                    "бесплатном тарифе всё продолжает работать.",
+                );
+              }
+            }}
+          >
+            Перейти на Pro — без водяного знака
+          </button>
+        </p>
+      )}
       <input
         type="file"
         accept="audio/*"

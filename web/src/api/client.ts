@@ -71,6 +71,15 @@ export class ApiClient {
     }
   }
 
+  /** Адрес оплаты у Stripe. Бросает ApiError, если биллинг не настроен. */
+  async startCheckout(): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/api/billing/checkout`, {
+      method: "POST",
+    });
+    const body = await parseOrThrow<{ url: string }>(response);
+    return body.url;
+  }
+
   async logout(): Promise<void> {
     await fetch(`${this.baseUrl}/api/auth/logout`, { method: "POST" });
   }

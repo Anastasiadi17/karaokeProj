@@ -181,3 +181,82 @@ def test_webhook_without_secret_is_503(tmp_path):
 
     assert response.status_code == 503
     assert response.json()["error"] == "billing_not_configured"
+
+
+# --- создание сессии оплаты -------------------------------------------
+#
+# Против настоящего Stripe этот путь не проверялся: ключей нет. Тесты
+# закрывают всё до отправки и после ответа — что уходит, что возвращается,
+# что делаем на сбое.
+
+
+def test_checkout_needs_a_session(client):
+    assert client.post("/api/billing/checkout").status_code == 401
+
+
+def test_checkout_without_keys_is_503(client):
+    login(client, "ivan@example.com")
+
+    response = client.post("/api/billing/checkout")
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "billing_not_configured"
+
+
+def test_checkout_sends_what_stripe_expects():
+    from karaoke_api.accounts.billing import create_checkout_session
+
+    sent = {}
+
+    def fake_post(url, data, key):
+        sent["url"] = url
+        sent["data"] = data
+        sent["key"] = key
+        return {"url": "https://checkout.stripe.com/c/pay/cs_test_1"}
+
+    url = create_checkout_session(
+        "sk_test_x", "price_1", "user-42", "ivan@example.com",
+        "https://karaoke.example", post=fake_post,
+    )
+
+    assert url.startswith("https://checkout.stripe.com/")
+    assert sent["key"] == "sk_test_x"
+    assert sent["data"]["mode"] == "subscription"
+    assert sent["data"]["line_items[0][price]"] == "price_1"
+    assert sent["data"]["customer_email"] == "ivan@example.com"
+    # По нему опознаём человека в вебхуке: адрес в Checkout можно поменять.
+    assert sent["data"]["client_reference_id"] == "user-42"
+    assert sent["data"]["success_url"].startswith("https://karaoke.example")
+
+
+def test_answer_without_url_is_an_error():
+    from karaoke_api.accounts.billing import StripeError, create_checkout_session
+
+    with pytest.raises(StripeError):
+        create_checkout_session(
+            "sk", "price", "u", "e@x.io", "https://x",
+            post=lambda *_: {"error": {"message": "нет такого price"}},
+        )
+
+
+def test_stripe_failure_becomes_502(tmp_path, monkeypatch):
+    from karaoke_api.accounts import billing
+
+    def boom(*_args, **_kwargs):
+        raise billing.StripeError("сеть недоступна")
+
+    monkeypatch.setattr(billing, "create_checkout_session", boom)
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+        stripe_secret_key="sk_test_x",
+        stripe_price_id="price_1",
+    )
+    with TestClient(create_app(settings)) as c:
+        login(c, "ivan@example.com")
+        response = c.post("/api/billing/checkout")
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "billing_unavailable"
