@@ -19,13 +19,13 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["tests/**/*.test.ts"],
-          exclude: ["tests/**/*.browser.test.ts"],
+          exclude: ["tests/**/*.browser.test.ts", "tests/**/*.browser.test.tsx"],
         },
       },
       {
         test: {
           name: "browser",
-          include: ["tests/**/*.browser.test.ts"],
+          include: ["tests/**/*.browser.test.ts", "tests/**/*.browser.test.tsx"],
           browser: {
             enabled: true,
             provider: playwright({
