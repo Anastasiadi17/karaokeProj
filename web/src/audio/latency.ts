@@ -6,6 +6,8 @@
  * сдвигом буфера — так его можно поменять уже после записи, не переписывая дубль.
  */
 
+import type { Samples } from "./samples";
+
 const STORAGE_KEY = "karaoke.latencyOffsetSec";
 
 export const MIN_OFFSET_SEC = -0.2;
@@ -23,9 +25,9 @@ export function secToSamples(sec: number, sampleRate: number): number {
 }
 
 export function shiftSamples(
-  channel: Float32Array,
+  channel: Samples,
   offsetSamples: number,
-): Float32Array {
+): Samples {
   if (offsetSamples === 0) return channel;
 
   const out = new Float32Array(channel.length);

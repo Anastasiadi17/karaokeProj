@@ -1,5 +1,7 @@
 /** Кодирование в WAV 16 бит. Без зависимостей: заголовок плюс PCM. */
 
+import type { Samples } from "./samples";
+
 export function floatToPcm16(sample: number): number {
   const clamped = Math.max(-1, Math.min(1, sample));
   return clamped < 0
@@ -7,7 +9,7 @@ export function floatToPcm16(sample: number): number {
     : Math.round(clamped * 32767);
 }
 
-export function interleave(channels: Float32Array[]): Float32Array {
+export function interleave(channels: Samples[]): Samples {
   if (channels.length === 1) return channels[0];
 
   const frames = channels[0].length;
@@ -26,7 +28,7 @@ function writeAscii(view: DataView, offset: number, text: string): void {
   }
 }
 
-export function encodeWav(channels: Float32Array[], sampleRate: number): Blob {
+export function encodeWav(channels: Samples[], sampleRate: number): Blob {
   const samples = interleave(channels);
   const channelCount = channels.length;
   const dataBytes = samples.length * 2;

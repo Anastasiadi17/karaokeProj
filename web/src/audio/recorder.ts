@@ -5,6 +5,8 @@
  * сведении, чтобы его можно было поменять, не переписывая дубль.
  */
 
+import type { Samples } from "./samples";
+
 export const MIC_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: false,
@@ -15,7 +17,7 @@ export const MIC_CONSTRAINTS: MediaStreamConstraints = {
   video: false,
 };
 
-export function concatChunks(chunks: Float32Array[]): Float32Array {
+export function concatChunks(chunks: Samples[]): Samples {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Float32Array(total);
   let offset = 0;
@@ -30,8 +32,8 @@ export class Recorder {
   private readonly ctx: AudioContext;
   private node: AudioWorkletNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private left: Float32Array[] = [];
-  private right: Float32Array[] = [];
+  private left: Samples[] = [];
+  private right: Samples[] = [];
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
@@ -46,7 +48,7 @@ export class Recorder {
     this.right = [];
 
     this.node = new AudioWorkletNode(this.ctx, "recorder-processor");
-    this.node.port.onmessage = (event: MessageEvent<Float32Array[]>) => {
+    this.node.port.onmessage = (event: MessageEvent<Samples[]>) => {
       const channels = event.data;
       this.left.push(channels[0]);
       this.right.push(channels[1] ?? channels[0]);
@@ -62,7 +64,7 @@ export class Recorder {
     this.node.connect(mute).connect(this.ctx.destination);
   }
 
-  stop(): Float32Array[] {
+  stop(): Samples[] {
     if (this.node) {
       this.node.port.onmessage = null;
       this.node.disconnect();

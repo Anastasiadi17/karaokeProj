@@ -1,5 +1,6 @@
 import { secToSamples, shiftSamples } from "./latency";
 import { createReverb } from "./reverb";
+import type { Samples } from "./samples";
 import { generateWatermark } from "./watermark";
 
 export interface MixOptions {
@@ -12,20 +13,20 @@ export interface MixOptions {
   watermark: boolean;
 }
 
-export function bufferToChannels(buffer: AudioBuffer): Float32Array[] {
+export function bufferToChannels(buffer: AudioBuffer): Samples[] {
   return Array.from({ length: buffer.numberOfChannels }, (_, ch) =>
     Float32Array.from(buffer.getChannelData(ch)),
   );
 }
 
-function toStereo(channels: Float32Array[]): Float32Array[] {
+function toStereo(channels: Samples[]): Samples[] {
   if (channels.length >= 2) return channels.slice(0, 2);
   return [channels[0], channels[0]];
 }
 
 export async function mixdown(
   music: AudioBuffer,
-  voice: Float32Array[],
+  voice: Samples[],
   sampleRate: number,
   options: MixOptions,
 ): Promise<AudioBuffer> {

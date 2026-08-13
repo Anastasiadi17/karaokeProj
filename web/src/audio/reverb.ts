@@ -5,11 +5,13 @@
  * требует, лицензировать нечего, для «комнаты» звучит достаточно.
  */
 
+import type { Samples } from "./samples";
+
 export function generateImpulse(
   sampleRate: number,
   durationSec: number,
   decay: number,
-): Float32Array[] {
+): Samples[] {
   const length = Math.floor(sampleRate * durationSec);
 
   return [0, 1].map(() => {

@@ -5,6 +5,8 @@
  * кодом, поэтому не требует ассетов и не создаёт лицензионных вопросов.
  */
 
+import type { Samples } from "./samples";
+
 export const WATERMARK_INTERVAL_SEC = 30;
 /** −18 dB */
 export const WATERMARK_GAIN = 0.126;
@@ -16,7 +18,7 @@ export function generateWatermark(
   sampleRate: number,
   totalSamples: number,
   options: { intervalSec?: number; gain?: number } = {},
-): Float32Array {
+): Samples {
   const { intervalSec = WATERMARK_INTERVAL_SEC, gain = WATERMARK_GAIN } =
     options;
 
