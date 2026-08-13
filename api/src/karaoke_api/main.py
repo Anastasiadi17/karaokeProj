@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .audio.probe import UnsupportedAudio, normalize_format, probe_audio
 from .cleanup import purge_expired, purge_orphan_track_dirs, purge_track
@@ -298,7 +299,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         }
 
+    _mount_web(app, settings)
     return app
+
+
+def _mount_web(app: FastAPI, settings: Settings) -> None:
+    """Раздаёт собранный фронтенд в корне, если он есть.
+
+    Монтируется последним намеренно: Starlette проверяет маршруты по порядку,
+    и `Mount("/")` съел бы всё, что зарегистрировано после него, — включая
+    `/api/*`.
+
+    Клиентских маршрутов у студии нет (экраны переключаются состоянием, не
+    адресом), поэтому фолбэк «любой путь → index.html» не нужен: неизвестный
+    адрес честно отвечает 404. Появятся маршруты — понадобится и фолбэк.
+    """
+    dist = settings.web_dist
+    if dist is None:
+        return
+
+    if not dist.is_dir():
+        # Не падаем: API полезен и без фронта, а «соберите web» — это
+        # сообщение человеку, а не повод не подняться.
+        log.warning(
+            "KARAOKE_WEB_DIST указывает на %s, но такого каталога нет — "
+            "фронтенд не раздаётся; соберите его командой npm run build",
+            dist,
+        )
+        return
+
+    app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+    log.info("фронтенд раздаётся из %s", dist)
 
 
 app = create_app()

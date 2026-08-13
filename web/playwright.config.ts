@@ -1,10 +1,19 @@
 import { defineConfig } from "@playwright/test";
 
+/**
+ * По умолчанию сценарии идут против dev-сервера Vite, который поднимается
+ * здесь же. Если задан `KARAOKE_E2E_BASE_URL`, сценарии идут против уже
+ * поднятого адреса и своего сервера не запускают — так проверяется собранный
+ * фронт, который раздаёт сам API (`KARAOKE_WEB_DIST`).
+ */
+const externalBaseUrl = process.env.KARAOKE_E2E_BASE_URL;
+const baseURL = externalBaseUrl ?? "http://127.0.0.1:5173";
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 120_000,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL,
     launchOptions: {
       args: [
         "--use-fake-ui-for-media-stream",
@@ -14,9 +23,13 @@ export default defineConfig({
       ],
     },
   },
-  webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:5173",
-    reuseExistingServer: true,
-  },
+  ...(externalBaseUrl
+    ? {}
+    : {
+        webServer: {
+          command: "npm run dev",
+          url: baseURL,
+          reuseExistingServer: true,
+        },
+      }),
 });
