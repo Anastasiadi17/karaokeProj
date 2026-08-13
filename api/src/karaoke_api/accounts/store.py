@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     stripe_customer_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS credit_ledger (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    delta           INTEGER NOT NULL,
+    reason          TEXT NOT NULL,
+    stripe_event_id TEXT UNIQUE,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_user
+    ON credit_ledger(user_id);
+
 CREATE TABLE IF NOT EXISTS webhook_events (
     stripe_event_id TEXT PRIMARY KEY,
     received_at     TEXT NOT NULL
@@ -324,6 +336,62 @@ class AccountStore:
             return None
         return User(id=row["id"], email=row["email"],
                     created_at=_parse_dt(row["created_at"]))
+
+    # --- кредиты ---------------------------------------------------
+    #
+    # Журнал дописыванием, а не число в пользователе. Две причины, обе
+    # практические: на вопрос «куда делись мои кредиты» есть ответ, а не
+    # догадки; и повторная доставка вебхука не начисляет дважды — мешает
+    # уникальный индекс по stripe_event_id.
+
+    def add_credits(self, user_id: str, delta: int, reason: str,
+                    stripe_event_id: str | None = None) -> bool:
+        """False, если это начисление уже было (повтор от Stripe)."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO credit_ledger (id, user_id, delta, reason,"
+                    " stripe_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (uuid.uuid4().hex, user_id, delta, reason,
+                     stripe_event_id, _now().isoformat()),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def credit_balance(self, user_id: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(delta), 0) AS n FROM credit_ledger"
+                " WHERE user_id = ?", (user_id,),
+            ).fetchone()
+        return int(row["n"])
+
+    def spend_credits(self, user_id: str, amount: int, reason: str) -> bool:
+        """Списывает, если хватает. False — не хватило, ничего не изменилось.
+
+        Проверка и запись под одним замком: иначе два одновременных запроса
+        уводят баланс в минус, и это тот случай, когда «почти атомарно»
+        означает «бесплатные AI-операции».
+        """
+        if amount <= 0:
+            raise ValueError("списывать можно только положительное число")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(delta), 0) AS n FROM credit_ledger"
+                " WHERE user_id = ?", (user_id,),
+            ).fetchone()
+            if int(row["n"]) < amount:
+                return False
+            self._conn.execute(
+                "INSERT INTO credit_ledger (id, user_id, delta, reason,"
+                " stripe_event_id, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+                (uuid.uuid4().hex, user_id, -amount, reason,
+                 _now().isoformat()),
+            )
+            self._conn.commit()
+        return True
 
     # --- операции --------------------------------------------------------
 

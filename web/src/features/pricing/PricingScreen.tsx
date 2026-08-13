@@ -75,6 +75,15 @@ export function PricingScreen({
         )}
       </article>
 
+      <article>
+        <h2>Кредиты</h2>
+        <p>
+          Сейчас на счету {me.credits}. Кредиты понадобятся для AI-функций —
+          их пока нет, и купить пакет нельзя: продавать то, что не работает,
+          мы не станем.
+        </p>
+      </article>
+
       {error && <p role="alert">{error}</p>}
 
       <p>

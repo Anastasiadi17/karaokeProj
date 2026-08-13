@@ -25,4 +25,5 @@ export interface Me {
   plan: "free" | "pro";
   operations_used: number;
   operations_limit: number;
+  credits: number;
 }

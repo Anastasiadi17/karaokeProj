@@ -11,6 +11,7 @@ const FREE: Me = {
   plan: "free",
   operations_used: 1,
   operations_limit: 3,
+  credits: 0,
 };
 
 const PRO: Me = { ...FREE, plan: "pro" };

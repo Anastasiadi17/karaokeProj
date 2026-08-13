@@ -198,6 +198,10 @@ def build_router(settings: Settings) -> APIRouter:
             "plan": accounts.plan_for(user.id),
             "operations_used": used,
             "operations_limit": settings.free_monthly_operations,
+            # Тратить кредиты пока не на что: первой AI-функции нет. Поле
+            # существует, чтобы баланс купленного пакета был виден сразу,
+            # а не появился вместе с функцией.
+            "credits": accounts.credit_balance(user.id),
         }
 
     return router

@@ -11,6 +11,7 @@ const ME: Me = {
   plan: "free",
   operations_used: 1,
   operations_limit: 3,
+  credits: 0,
 };
 
 /** Клиент, у которого экран трогает только загрузку. */

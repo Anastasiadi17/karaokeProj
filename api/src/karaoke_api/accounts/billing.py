@@ -80,6 +80,23 @@ def apply_event(accounts, event: dict) -> bool:
     kind = event.get("type", "")
     data = (event.get("data") or {}).get("object") or {}
 
+    if kind == "checkout.session.completed" and data.get("mode") == "payment":
+        # Разовая покупка пакета кредитов. Сколько именно — кладём в
+        # metadata при создании сессии: цена и объём пакета живут у Stripe,
+        # и дублировать их у себя значит однажды разойтись.
+        email = (data.get("customer_details") or {}).get("email")             or data.get("customer_email")
+        amount = (data.get("metadata") or {}).get("credits")
+        if not email or not amount:
+            log.warning("покупка кредитов без адреса или количества")
+            return False
+        user = accounts.user_by_email(email)
+        if user is None:
+            log.warning("покупка кредитов за неизвестный адрес %s", email)
+            return False
+        return accounts.add_credits(
+            user.id, int(amount), "purchase", event.get("id"),
+        )
+
     if kind == "checkout.session.completed":
         email = (data.get("customer_details") or {}).get("email") \
             or data.get("customer_email")
