@@ -1,4 +1,5 @@
 import logging
+import threading
 from pathlib import Path
 
 import soundfile as sf
@@ -11,6 +12,13 @@ from demucs.pretrained import get_model
 from .base import ProgressCallback, SeparationResult
 
 log = logging.getLogger(__name__)
+
+# Длительность пробного тензора для warmup(). По замеру двумя точками
+# (karaoke-context.md 4.5) счёт стоит ≈0,03 с на секунду звука, то есть пять
+# секунд — это ≈0,15 с. При этом пять секунд попадают в обычную сегментную
+# ветку apply_model, а не в вырожденную, то есть прогревают те же ядра, что
+# и настоящая задача.
+WARMUP_SECONDS = 5.0
 
 
 def _load_wav(source: Path) -> tuple[torch.Tensor, int]:
@@ -39,12 +47,63 @@ class DemucsSeparator:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._model_name = model_name
         self._model = None
+        self._model_lock = threading.Lock()
 
     def _ensure_model(self):
-        if self._model is None:
-            log.info("загружаю модель %s на %s", self._model_name, self.device)
-            self._model = get_model(self._model_name).to(self.device).eval()
+        """Загрузить модель один раз. Повторные вызовы отдают ту же.
+
+        Замок здесь страхует будущее, а не чинит настоящее. Инвариант такой:
+        модели касается только рабочий поток раннера — прогрев идёт в нём же,
+        первым делом в run_forever. Инвариант нигде больше не записан, а без
+        замка любой второй вызывающий (фоновый поток, второй раннер) получил
+        бы две параллельные загрузки: лишние секунды, лишняя видеопамять и
+        ни одного сообщения о том, что что-то не так.
+
+        Схема double-checked: быстрая проверка без замка на горячем пути,
+        повторная — под ним, потому что между первой проверкой и захватом
+        замка модель мог загрузить кто-то другой.
+        """
+        if self._model is not None:
+            return self._model
+        with self._model_lock:
+            if self._model is None:
+                log.info("загружаю модель %s на %s", self._model_name,
+                         self.device)
+                self._model = get_model(self._model_name).to(
+                    self.device).eval()
         return self._model
+
+    def warmup(self) -> None:
+        """Загрузить модель и прогнать через неё короткую тишину.
+
+        Издержки первого запроса — две разные величины: загрузка весов из
+        локального кеша (≈2,6 с, наступает на первом _ensure_model в
+        процессе) и JIT-компиляция ядер CUDA (≈20 с, наступает на первом
+        настоящем apply_model на машине или в контейнере). Прогрев, который
+        только грузит веса, снял бы с первого пользователя меньшую из двух.
+
+        Прогон идёт через _apply_with_fallback — тот же путь, которым идут
+        настоящие задачи. Прогрев через другой путь прогрел бы не те ядра.
+
+        На CPU пробного инференса нет: компилировать нечего, создание
+        примитивов oneDNN стоит миллисекунды, а прогон пяти секунд через
+        htdemucs на процессоре — десятки секунд. Тратить их, чтобы не
+        сэкономить ничего, незачем.
+
+        Пометка о деградации наружу не идёт: warmup не создаёт
+        SeparationResult. Откат на CPU на пяти секундах тишины означает, что
+        что-то серьёзно не так, поэтому он логируется предупреждением.
+        """
+        model = self._ensure_model()
+        if self.device != "cuda":
+            return
+        frames = int(WARMUP_SECONDS * model.samplerate)
+        _, degraded = self._apply_with_fallback(model, torch.zeros(2, frames))
+        if degraded:
+            log.warning(
+                "прогрев прошёл только на CPU: видеопамяти не хватило даже "
+                "на %.0f с тишины", WARMUP_SECONDS,
+            )
 
     def _apply_with_fallback(
         self, model, wav: torch.Tensor

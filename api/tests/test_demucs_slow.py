@@ -304,3 +304,42 @@ def test_separates_real_audio_and_reports_timing(make_wav, tmp_path, capsys):
         )
 
     assert relative_error < MAX_RECONSTRUCTION_RELATIVE_ERROR
+
+
+@pytest.mark.slow
+def test_warmup_loads_model_once_and_separate_reuses_it(make_wav, tmp_path,
+                                                        capsys):
+    """Прогрев обязан оставить модель в памяти, а не загрузить и выбросить.
+
+    Проверяется тождеством объекта, а не таймингом: если separate() строит
+    модель заново, прогрев не снимает с первого пользователя ничего, а
+    замер времени на прогретой машине этого не покажет — разница утонет в
+    разбросе. Повторный warmup() проверяет идемпотентность, которую требует
+    контракт протокола.
+    """
+    separator = DemucsSeparator()
+
+    started = time.perf_counter()
+    separator.warmup()
+    elapsed = time.perf_counter() - started
+
+    warmed = separator._model
+    assert warmed is not None, "прогрев не оставил модель в памяти"
+
+    separator.warmup()
+    assert separator._model is warmed, "повторный прогрев перезагрузил модель"
+
+    source = make_wav(duration_sec=1.0, sample_rate=44100, channels=2)
+    out = tmp_path / "out"
+    out.mkdir()
+    separator.separate(source, out, lambda stage, pct: None)
+
+    assert separator._model is warmed, "separate() загрузил модель заново"
+
+    with capsys.disabled():
+        print(
+            f"\n=== ПРОГРЕВ ===\n"
+            f"устройство: {separator.device}\n"
+            f"занял:      {elapsed:.1f} с\n"
+            f"==============="
+        )
