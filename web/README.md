@@ -41,7 +41,13 @@ dev-сервера и прокси, — соберите фронт и укаж�
 Вход обязателен, поэтому API для сквозных тестов поднимается с флагом,
 отдающим ссылку входа прямо в ответе (письмо в тесте не прочитать):
 
-    KARAOKE_EXPOSE_LOGIN_LINK=1 .venv/Scripts/python -m uvicorn karaoke_api.main:app
+    KARAOKE_EXPOSE_LOGIN_LINK=1 KARAOKE_STRIPE_WEBHOOK_SECRET=whsec_e2e         .venv/Scripts/python -m uvicorn karaoke_api.main:app
+
+Секрет вебхука нужен сценариям про кредиты: покупку в тесте не пройти (ключей
+нет), поэтому кредиты начисляются событием с настоящей подписью — тем же
+путём, каким их начислит Stripe. Тот же секрет передаётся и Playwright:
+
+    KARAOKE_STRIPE_WEBHOOK_SECRET=whsec_e2e npm run test:e2e
 
 Флаг только для разработки: с ним вход в чужой аккаунт получает любой, кто
 знает адрес. При старте сервис пишет об этом предупреждение.
