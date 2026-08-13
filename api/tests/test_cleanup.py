@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,8 +12,10 @@ from karaoke_api.cleanup import (
 )
 from karaoke_api.config import Settings
 from karaoke_api.deps import AppState
+from karaoke_api.jobs.runner import JobRunner
 from karaoke_api.jobs.store import JobStore, new_id
 from karaoke_api.main import create_app
+from karaoke_api.separation.fake import FakeSeparator
 from karaoke_api.storage.local import LocalStorage
 from karaoke_api.track_lock import TrackLock
 
@@ -241,3 +244,76 @@ def test_delete_answers_503_when_the_lock_is_busy(tmp_path, make_wav):
 
     assert response.status_code == 503
     assert response.json() == {"error": "delete_failed"}
+
+
+class BlockingStorage:
+    """Останавливает воркера ровно внутри записи стемов.
+
+    SlowSeparator сюда не годится: он тормозит separate, а остаточное окно
+    живёт ПОСЛЕ него — между проверкой строки трека и записью файлов.
+    Добраться до окна можно только задержкой внутри store_file.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.writing_stems = threading.Event()
+        self.may_continue = threading.Event()
+
+    def store_file(self, key, src):
+        if "/stems/" in key:
+            self.writing_stems.set()
+            self.may_continue.wait(10)
+        self._inner.store_file(key, src)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_delete_waits_for_stem_write_and_leaves_no_orphan(tmp_path, make_wav):
+    """Настоящая гонка: DELETE приходит, когда воркер уже прошёл проверку
+    строки и пишет стемы.
+
+    Без замка удаление проходит немедленно, воркер дописывает каталог уже
+    после rmtree, и файлы переживают строку. Их не видит ни выдача стемов
+    (спрашивает базу), ни уборка по TTL (ходит по строкам) — подбирает
+    только сверка каталогов при следующем старте процесса.
+    """
+    store = JobStore(tmp_path / "db.sqlite")
+    inner = LocalStorage(tmp_path / "store")
+    storage = BlockingStorage(inner)
+    work = tmp_path / "work"
+    work.mkdir()
+    lock = TrackLock()
+
+    track_id = new_id()
+    key = f"tracks/{track_id}/original.wav"
+    inner.store_file(key, make_wav(duration_sec=0.5))
+    store.create_track(track_id, "s.wav", key, 0.5)
+    store.create_job(track_id)
+
+    runner = JobRunner(store, storage, FakeSeparator(), work, track_lock=lock)
+
+    worker = threading.Thread(target=runner.run_once)
+    worker.start()
+    assert storage.writing_stems.wait(10), "воркер не дошёл до записи стемов"
+
+    deleter = threading.Thread(
+        target=purge_track, args=(store, inner, lock, track_id)
+    )
+    deleter.start()
+    deleter.join(0.5)
+    assert deleter.is_alive(), (
+        "удаление прошло, пока воркер писал стемы: замок не держится"
+    )
+
+    storage.may_continue.set()
+    worker.join(10)
+    deleter.join(10)
+
+    try:
+        assert store.get_track(track_id) is None
+        assert inner.list_prefixes("tracks") == [], (
+            "каталог трека пережил удаление"
+        )
+    finally:
+        store.close()

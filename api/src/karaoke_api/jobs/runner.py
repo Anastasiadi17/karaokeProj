@@ -104,26 +104,34 @@ class JobRunner:
 
             result = self._separator.separate(source, scratch, on_progress)
 
-            if self._store.get_track(job.track_id) is None:
-                # Трек удалили, пока задача считалась (DELETE или автоочистка
-                # по TTL). Записать стемы сейчас — значит заново создать
-                # каталог трека, которого нет в базе: его не увидит ни
-                # list_expired_tracks, ни DELETE, и файлы останутся навсегда.
-                # Строки задачи тоже уже нет, помечать нечего.
-                log.info("трек %s удалён во время обработки, стемы не пишем",
-                         job.track_id)
-                return True
+            # Критическая секция: проверка строки, запись стемов и finish
+            # обязаны быть неделимы относительно удаления. Иначе DELETE
+            # успевает целиком между проверкой и записью, и каталог трека
+            # переживает строку — такие файлы не видит ни выдача стемов
+            # (спрашивает базу), ни уборка по TTL (ходит по строкам).
+            # Подробности — в спеке 2026-08-13-delete-race-design.md.
+            #
+            # finish внутри секции намеренно: тогда инвариант «стемы на
+            # диске ⟺ задача done» держится целиком, а не почти.
+            with self._track_lock.hold():
+                if self._store.get_track(job.track_id) is None:
+                    # Трек удалили, пока задача считалась (DELETE или
+                    # автоочистка по TTL). Строки задачи тоже уже нет,
+                    # помечать нечего.
+                    log.info("трек %s удалён во время обработки, стемы не "
+                             "пишем", job.track_id)
+                    return True
 
-            stems = {}
-            for name, path in (("vocals", result.vocals),
-                               ("no_vocals", result.no_vocals)):
-                key = f"tracks/{job.track_id}/stems/{name}.wav"
-                self._storage.store_file(key, path)
-                stems[name] = key
+                stems = {}
+                for name, path in (("vocals", result.vocals),
+                                   ("no_vocals", result.no_vocals)):
+                    key = f"tracks/{job.track_id}/stems/{name}.wav"
+                    self._storage.store_file(key, path)
+                    stems[name] = key
 
-            self._store.finish(
-                job.id, {"stems": stems, "degraded": result.degraded}
-            )
+                self._store.finish(
+                    job.id, {"stems": stems, "degraded": result.degraded}
+                )
         except Exception as exc:
             log.exception("задача %s упала", job.id)
             try:
