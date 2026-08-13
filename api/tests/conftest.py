@@ -37,6 +37,9 @@ class SlowSeparator:
         self._delay = delay
         self.started = threading.Event()
 
+    def warmup(self) -> None:
+        """Греть нечего: подделка просто спит в separate."""
+
     def separate(self, source, out_dir, on_progress):
         self.started.set()
         time.sleep(self._delay)

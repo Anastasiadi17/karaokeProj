@@ -2,6 +2,8 @@ import asyncio
 import logging
 import shutil
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..separation.base import StemSeparator
@@ -10,6 +12,25 @@ from .models import Stage
 from .store import JobStore
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WarmupStatus:
+    """Состояние разового прогрева разделителя.
+
+    state — ровно четыре значения: pending (цикл ещё не стартовал), loading
+    (идёт прогрев), ready (прогрет), failed (не удался). detail заполняется
+    только при failed и несёт тип и текст исключения. elapsed_sec
+    заполняется при ready и failed (сколько прошло до отказа), при pending и
+    loading равен None.
+
+    Класс неизменяемый намеренно: наружу публикуется объект целиком, и
+    читатель из событийного цикла не может застать половинчатое состояние.
+    """
+
+    state: str
+    detail: str | None = None
+    elapsed_sec: float | None = None
 
 
 class JobRunner:
@@ -26,10 +47,20 @@ class JobRunner:
         self._work_dir = Path(work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._stopped = False
+        self._warmup_status = WarmupStatus("pending")
         # Взведено, пока рабочий поток ничего не считает. Нужно при
         # выключении: см. wait_until_idle.
         self._idle = threading.Event()
         self._idle.set()
+
+    @property
+    def warmup_status(self) -> WarmupStatus:
+        """Читается из событийного цикла, пишется рабочим потоком.
+
+        Замок не нужен: публикуется неизменяемый объект целиком, а
+        присваивание ссылки в CPython атомарно.
+        """
+        return self._warmup_status
 
     def run_once(self) -> bool:
         """Обработать одну задачу. False — очередь пуста."""
@@ -104,9 +135,50 @@ class JobRunner:
     def stop(self) -> None:
         self._stopped = True
 
+    def _warmup(self) -> None:
+        """Разовый прогрев разделителя перед циклом опроса.
+
+        Исключение наружу не выпускается намеренно: сервис без модели всё
+        равно принимает загрузки, отдаёт уже готовые стемы и убирает мусор, а
+        задача упадёт на своей загрузке модели и получит честную причину в
+        поле error. Та же линия, что у check_gpu, который по контракту не
+        валит старт ни при каких обстоятельствах.
+        """
+        self._warmup_status = WarmupStatus("loading")
+        started = time.perf_counter()
+        try:
+            self._separator.warmup()
+        except Exception as exc:
+            log.exception("прогрев разделителя не удался")
+            self._warmup_status = WarmupStatus(
+                "failed",
+                f"{type(exc).__name__}: {exc}",
+                time.perf_counter() - started,
+            )
+            return
+        elapsed = time.perf_counter() - started
+        self._warmup_status = WarmupStatus("ready", None, elapsed)
+        log.info("разделитель прогрет за %.1f с", elapsed)
+
     async def run_forever(self, poll_interval: float = 0.5) -> None:
         """Цикл опроса. Обработка идёт в пуле потоков, чтобы не блокировать
-        событийный цикл FastAPI на десятки секунд."""
+        событийный цикл FastAPI на десятки секунд.
+
+        Прогрев — первым делом и в том же пуле. Тогда модели касается ровно
+        один поток за всю жизнь процесса, и гонки за её загрузку нет по
+        построению, а не по факту установленного замка. Приём HTTP при этом
+        не задерживается: событийный цикл свободен, а задача, поставленная
+        во время прогрева, дождётся его в очереди — модель ей всё равно
+        нужна.
+
+        Выключение во время прогрева: task.cancel() снимает только ожидание
+        to_thread, рабочий поток дозагружает модель. Базы прогрев не
+        касается, поэтому терять нечего (в отличие от run_once, ради
+        которого существует wait_until_idle), а ждать процесс будет не
+        дольше самой загрузки.
+        """
+        if not self._stopped:
+            await asyncio.to_thread(self._warmup)
         while not self._stopped:
             try:
                 did_work = await asyncio.to_thread(self.run_once)

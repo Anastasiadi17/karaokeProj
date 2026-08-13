@@ -1,18 +1,58 @@
 import dataclasses
 import sqlite3
+import time
 
 import pytest
+from fastapi.testclient import TestClient
 
+from karaoke_api import deps
+from karaoke_api.config import Settings
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.runner import JobRunner
 from karaoke_api.jobs.store import JobStore, new_id
+from karaoke_api.main import create_app
 from karaoke_api.separation.fake import FakeSeparator
 from karaoke_api.storage.local import LocalStorage
 
 
 class ExplodingSeparator:
+    def warmup(self):
+        """Греть нечего: подделка не держит модели."""
+
     def separate(self, source, out_dir, on_progress):
         raise RuntimeError("CUDA out of memory")
+
+
+class RecordingSeparator:
+    """Записывает порядок вызовов.
+
+    Прогрев проверяется порядком, а не таймингом: подделка греется за
+    микросекунды, и любое измерение времени тут покажет шум.
+    """
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def warmup(self):
+        self.calls.append("warmup")
+
+    def separate(self, source, out_dir, on_progress):
+        self.calls.append("separate")
+        return FakeSeparator().separate(source, out_dir, on_progress)
+
+
+class FailingWarmupSeparator:
+    """Прогрев падает, разделение работает.
+
+    Ровно тот случай, ради которого прогрев не имеет права валить сервис:
+    веса не скачались один раз, а ленивая загрузка потом справилась.
+    """
+
+    def warmup(self):
+        raise RuntimeError("веса не скачались")
+
+    def separate(self, source, out_dir, on_progress):
+        return FakeSeparator().separate(source, out_dir, on_progress)
 
 
 @pytest.fixture
@@ -184,3 +224,91 @@ def test_scratch_dir_creation_failure_marks_job_failed(wiring):
 
     job = store.get_job(job_id)
     assert job.status is JobStatus.FAILED
+
+
+def test_warmup_status_is_pending_before_the_loop_starts(wiring):
+    """До запуска цикла честный ответ — «ещё не начинали», а не «готово»."""
+    store, storage, work, _ = wiring
+    runner = JobRunner(store, storage, FakeSeparator(), work)
+
+    assert runner.warmup_status.state == "pending"
+    assert runner.warmup_status.detail is None
+    assert runner.warmup_status.elapsed_sec is None
+
+
+def test_warmup_reports_ready_with_elapsed_time(wiring):
+    store, storage, work, _ = wiring
+    runner = JobRunner(store, storage, FakeSeparator(), work)
+
+    runner._warmup()
+
+    status = runner.warmup_status
+    assert status.state == "ready"
+    assert status.detail is None
+    assert status.elapsed_sec is not None
+    assert status.elapsed_sec >= 0
+
+
+def test_failed_warmup_records_reason_and_does_not_stop_the_loop(wiring):
+    """Отказ прогрева не должен лишать сервис всего остального.
+
+    Загрузка треков, выдача готовых стемов и уборка от модели не зависят, а
+    задача попробует загрузить модель сама и упадёт с честной причиной. Это
+    та же линия, что у check_gpu, который старт не валит ни при каких
+    обстоятельствах.
+    """
+    store, storage, work, track_id = wiring
+    runner = JobRunner(store, storage, FailingWarmupSeparator(), work)
+    job_id = store.create_job(track_id)
+
+    runner._warmup()
+
+    status = runner.warmup_status
+    assert status.state == "failed"
+    assert "RuntimeError" in status.detail
+    assert "веса не скачались" in status.detail
+    assert status.elapsed_sec is not None
+
+    assert runner.run_once() is True
+    assert store.get_job(job_id).status is JobStatus.DONE
+
+
+def test_warmup_runs_before_the_first_job_is_claimed(tmp_path, monkeypatch,
+                                                     make_wav):
+    """Прогрев обязан случиться до того, как раннер возьмёт первую задачу.
+
+    Иначе первый пользователь по-прежнему платит загрузку модели, и весь
+    смысл прогрева теряется. Проверяется сквозь настоящий lifespan, потому
+    что порядок задают именно он и run_forever, а не прямой вызов метода.
+    """
+    separator = RecordingSeparator()
+    monkeypatch.setattr(deps, "build_separator", lambda s, gpu=None: separator)
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        with open(make_wav(duration_sec=0.5), "rb") as fh:
+            ids = client.post(
+                "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}
+            ).json()
+
+        deadline = time.time() + 10
+        body = None
+        while time.time() < deadline:
+            body = client.get(f"/api/jobs/{ids['job_id']}").json()
+            if body["status"] in ("done", "failed"):
+                break
+            time.sleep(0.05)
+
+        assert body is not None and body["status"] == "done", (
+            f"задача не досчитала за 10 с: {body}"
+        )
+        assert client.app.state.karaoke.runner.warmup_status.state == "ready"
+
+    assert separator.calls[0] == "warmup", (
+        f"первым вызовом был не прогрев: {separator.calls}"
+    )
+    assert "separate" in separator.calls

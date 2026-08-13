@@ -11,6 +11,9 @@ class FakeSeparator:
     проверить за миллисекунды без GPU и без настоящей модели.
     """
 
+    def warmup(self) -> None:
+        """Греть нечего: подделка готова всегда, и это честно."""
+
     def separate(
         self,
         source: Path,
