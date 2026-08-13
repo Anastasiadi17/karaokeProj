@@ -56,6 +56,10 @@ class JobStore:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # С появлением аккаунтов к файлу ходят два соединения одного процесса
+        # (это и AccountStore). Замок сериализует только своё соединение, а
+        # чужую запись без ожидания SQLite встретит «database is locked».
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
