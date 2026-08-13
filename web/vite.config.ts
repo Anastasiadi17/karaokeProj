@@ -25,7 +25,18 @@ export default defineConfig({
           include: ["tests/**/*.browser.test.ts"],
           browser: {
             enabled: true,
-            provider: playwright(),
+            provider: playwright({
+              launchOptions: {
+                args: [
+                  // Без этого AudioContext в headless остаётся suspended:
+                  // жеста пользователя в тестах нет, process() не вызывается.
+                  "--autoplay-policy=no-user-gesture-required",
+                  // Микрофон в тестах — синтетический, без запроса разрешения.
+                  "--use-fake-device-for-media-stream",
+                  "--use-fake-ui-for-media-stream",
+                ],
+              },
+            }),
             headless: true,
             instances: [{ browser: "chromium" }],
             // Windows: «localhost» разрешается сначала в ::1, а сервер слушает
