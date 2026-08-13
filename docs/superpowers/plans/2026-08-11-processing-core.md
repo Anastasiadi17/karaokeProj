@@ -4,7 +4,7 @@
 
 **Goal:** HTTP-сервис, который принимает аудиофайл, отделяет минусовку через demucs и отдаёт дорожки браузеру.
 
-**Architecture:** FastAPI с фоновым исполнителем задач в том же процессе. Модель demucs загружается один раз при старте и остаётся в памяти. Три шва описаны протоколами: `StemSeparator`, `Storage`, очередь (`JobStore` + `JobRunner`). Весь конвейер тестируется без GPU через `FakeSeparator`.
+**Architecture:** FastAPI с фоновым исполнителем задач в том же процессе. Модель demucs прогревается один раз при старте — в фоне, в рабочем потоке раннера, приём запросов при этом не блокируется — и остаётся в памяти. Три шва описаны протоколами: `StemSeparator`, `Storage`, очередь (`JobStore` + `JobRunner`). Весь конвейер тестируется без GPU через `FakeSeparator`.
 
 **Tech Stack:** Python 3.12, FastAPI, uvicorn, pydantic-settings, demucs 4.x, PyTorch (сборка cu128+), soundfile, SQLite (stdlib `sqlite3`), pytest, httpx.
 
