@@ -28,6 +28,9 @@ export default defineConfig({
             provider: playwright(),
             headless: true,
             instances: [{ browser: "chromium" }],
+            // Windows: «localhost» разрешается сначала в ::1, а сервер слушает
+            // IPv4 — без явного хоста браузер стучится не туда.
+            api: { host: "127.0.0.1" },
           },
         },
       },
