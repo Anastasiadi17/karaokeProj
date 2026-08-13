@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .accounts.routes import build_router as build_accounts_router
 from .audio.probe import UnsupportedAudio, normalize_format, probe_audio
 from .cleanup import purge_expired, purge_orphan_track_dirs, purge_track
 from .config import Settings, get_settings
@@ -299,6 +300,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         }
 
+    app.include_router(build_accounts_router(settings))
     _mount_web(app, settings)
     return app
 

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from .accounts.store import AccountStore
 from .config import Settings
 from .gpu import GpuStatus
 from .jobs.runner import JobRunner
@@ -36,6 +37,7 @@ def build_separator(settings: Settings,
 class AppState:
     settings: Settings
     store: JobStore
+    accounts: AccountStore
     storage: LocalStorage
     separator: StemSeparator
     runner: JobRunner
@@ -45,6 +47,7 @@ class AppState:
     def build(cls, settings: Settings,
               gpu: GpuStatus | None = None) -> "AppState":
         store = JobStore(settings.db_path)
+        accounts = AccountStore(settings.db_path)
         storage = LocalStorage(Path(settings.data_dir) / "files")
         separator = build_separator(settings, gpu)
         track_lock = TrackLock()
@@ -52,4 +55,5 @@ class AppState:
             store, storage, separator, Path(settings.data_dir) / "work",
             track_lock=track_lock,
         )
-        return cls(settings, store, storage, separator, runner, track_lock)
+        return cls(settings, store, accounts, storage, separator, runner,
+                   track_lock)
