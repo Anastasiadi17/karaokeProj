@@ -1,32 +1,56 @@
-# React + TypeScript + Vite
+# Karaoke Studio
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Браузерная часть: загрузка трека, запись голоса поверх минусовки, сведение и
+экспорт.
 
-Currently, two official plugins are available:
+## Запуск
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Сначала поднимите API (см. `../api/README.md`), затем:
 
-## React Compiler
+    npm install
+    npm run dev
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Открыть <http://127.0.0.1:5173>. Запросы к `/api` проксируются на порт 8000.
+Сервер разработки слушает именно IPv4: на Windows «localhost» разрешается
+сначала в `::1`, и ожидание по адресу `127.0.0.1` не дожидается ничего.
 
-## Expanding the Oxlint configuration
+## Тесты
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+    npm test              # чистая логика, Node
+    npm run test:browser  # Web Audio в headless Chromium
+    npm run test:all      # оба проекта Vitest сразу
+    npm run test:e2e      # сквозной путь, нужен запущенный API
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+Перед первым запуском e2e создать тестовое аудио:
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+    node e2e/make-fixture.mjs
+
+Браузерные тесты поднимают Chromium с
+`--autoplay-policy=no-user-gesture-required`: без этого флага `AudioContext`
+остаётся `suspended`, `process()` не вызывается и запись молча даёт нули.
+В живом браузере ту же роль играет нажатие «Записать» — контекст поднимается
+там через `resume()`.
+
+## Ручная проверка
+
+Автоматика не покрывает живой микрофон и качество звучания. Чек-лист:
+
+1. Запись без наушников — убедиться, что нет самовозбуждения.
+2. Мониторинг включён — оценить, терпима ли задержка.
+3. Спеть куплет, экспортировать, послушать: голос попадает в музыку.
+4. Подвигать ползунок смещения — сдвиг слышен в обе стороны.
+5. Обновить страницу с несохранённой записью — браузер предупреждает.
+
+## Устройство
+
+`src/audio/` — движок без React: буферы на вход, буферы на выход.
+Тестируется в headless-браузере на настоящем `OfflineAudioContext`.
+
+`src/features/` — экраны и состояние интерфейса.
+
+Смещение записи применяется при сведении сдвигом буфера, а не задержкой в
+графе: так его можно менять уже после записи.
+
+Буферы сэмплов объявлены как `Samples` (`Float32Array<ArrayBuffer>`): Web Audio
+не принимает массивы, которые могут лежать в `SharedArrayBuffer`, а голый
+`Float32Array` с TypeScript 5.7 означает именно «может».

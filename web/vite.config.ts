@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [react()],
   server: {
+    // Явный IPv4: на Windows «localhost» разрешается сначала в ::1, и
+    // ожидание сервера по адресу 127.0.0.1 не дожидается ничего.
+    host: "127.0.0.1",
     proxy: {
       "/api": "http://127.0.0.1:8000",
     },

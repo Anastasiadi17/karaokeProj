@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Генерируется скриптом e2e/make-fixture.mjs
+e2e/fixtures/

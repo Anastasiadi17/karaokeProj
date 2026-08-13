@@ -2595,7 +2595,9 @@ test("понятная ошибка на неподходящем файле", a
     buffer: Buffer.from("это точно не аудио"),
   });
 
-  await expect(page.getByRole("alert")).toContainText("не похож на аудио");
+  await expect(page.getByRole("alert")).toContainText(
+    "Формат не поддерживается",
+  );
 });
 ```
 
