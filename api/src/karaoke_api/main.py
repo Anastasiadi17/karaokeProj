@@ -268,6 +268,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health(request: Request):
         gpu = request.app.state.gpu
+        # Состояние прогрева живёт у раннера, а не в app.state рядом с gpu:
+        # gpu пишется один раз до старта и больше не меняется, а прогрев
+        # пишет рабочий поток раннера уже после.
+        warmup = request.app.state.karaoke.runner.warmup_status
         return {
             "gpu": {
                 "available": gpu.available,
@@ -276,6 +280,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "hint": gpu.hint,
             },
             "separator": settings.separator,
+            "model": {
+                "state": warmup.state,
+                "detail": warmup.detail,
+                "elapsed_sec": warmup.elapsed_sec,
+            },
         }
 
     return app

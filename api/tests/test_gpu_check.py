@@ -1,4 +1,5 @@
 import sys
+import time
 import types
 
 import pytest
@@ -137,6 +138,37 @@ def test_health_endpoint_exposes_gpu(tmp_path):
         assert "gpu" in body
         assert "available" in body["gpu"]
         assert body["separator"] == "fake"
+
+
+def test_health_reports_model_warmup_state(tmp_path):
+    """Эндпоинт называется проверкой готовности — он обязан говорить и о
+    модели, а не только о GPU.
+
+    Опрос в цикле, а не одно обращение: прогрев идёт в фоне, и на момент
+    выхода из lifespan-стартапа фоновая задача могла ещё не получить
+    управление. С FakeSeparator это микросекунды, но гонка настоящая.
+    """
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+    )
+    with TestClient(create_app(settings)) as client:
+        deadline = time.time() + 10
+        body = None
+        while time.time() < deadline:
+            body = client.get("/api/health").json()
+            if body["model"]["state"] == "ready":
+                break
+            time.sleep(0.05)
+
+    assert body is not None
+    assert body["model"]["state"] == "ready", f"прогрев не дошёл до ready: {body}"
+    assert body["model"]["detail"] is None
+    assert body["model"]["elapsed_sec"] is not None
+    # Существующие ключи не должны пострадать от добавления нового.
+    assert "gpu" in body
+    assert body["separator"] == "fake"
 
 
 def _require_gpu_stack():
