@@ -1,0 +1,18 @@
+# Всё, чему нечего делать в контексте сборки: он и так тяжёлый.
+.git
+.idea
+.superpowers
+docs
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+api/data
+api/.env
+web/e2e
+web/test-results
+web/playwright-report
+web/.vitest-attachments
+*.docx

@@ -1,0 +1,28 @@
+# Запуск на GPU-машине: docker compose up --build
+#
+# ВНИМАНИЕ: как и Dockerfile, ни разу не запускалось — демон Docker в среде,
+# где это написано, недоступен.
+
+services:
+  karaoke:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Треки, стемы и база задач переживают пересоздание контейнера.
+      - karaoke-data:/data
+    environment:
+      # Полный список — в api/.env.example.
+      KARAOKE_SEPARATOR: demucs
+      KARAOKE_FILE_TTL_HOURS: "24"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  karaoke-data:
