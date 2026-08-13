@@ -94,6 +94,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.warning("GPU недоступен (%s). Обработка пойдёт на CPU и будет "
                         "в десятки раз медленнее. %s", gpu.reason, gpu.hint)
 
+        if settings.expose_login_link:
+            log.warning(
+                "KARAOKE_EXPOSE_LOGIN_LINK включён: ссылка входа отдаётся в "
+                "ответе API. Это режим разработки — в бою вход получит любой, "
+                "кто знает чужой адрес."
+            )
+
         state = AppState.build(settings, gpu)
         app.state.karaoke = state
 

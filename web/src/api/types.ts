@@ -19,3 +19,10 @@ export interface UploadResult {
   trackId: string;
   jobId: string;
 }
+
+export interface Me {
+  email: string;
+  plan: "free" | "pro";
+  operations_used: number;
+  operations_limit: number;
+}

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ApiError } from "../../api/client";
 import type { ApiClient } from "../../api/client";
-import type { UploadResult } from "../../api/types";
+import type { Me, UploadResult } from "../../api/types";
 
 const MESSAGES: Record<string, string> = {
   unsupported_format:
@@ -9,14 +9,22 @@ const MESSAGES: Record<string, string> = {
     "m4a конвертируйте в один из них.",
   too_long: "Трек длиннее 10 минут.",
   too_large: "Файл больше 200 МБ.",
+  quota_exceeded:
+    "На бесплатном тарифе три трека в месяц, и они закончились. " +
+    "Счётчик обнулится первого числа.",
+  unauthorized: "Сессия закончилась. Войдите ещё раз.",
 };
 
 export function UploadScreen({
   client,
+  me,
   onUploaded,
+  onLogout,
 }: {
   client: ApiClient;
+  me: Me;
   onUploaded: (result: UploadResult) => void;
+  onLogout: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +47,11 @@ export function UploadScreen({
   return (
     <section>
       <h1>Загрузите трек</h1>
+      <p>
+        {me.email} · осталось {Math.max(0, me.operations_limit - me.operations_used)}{" "}
+        из {me.operations_limit} треков в этом месяце{" "}
+        <button onClick={onLogout}>Выйти</button>
+      </p>
       <input
         type="file"
         accept="audio/*"

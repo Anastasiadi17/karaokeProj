@@ -1,4 +1,4 @@
-import type { JobState, StemKind, UploadResult } from "./types";
+import type { JobState, Me, StemKind, UploadResult } from "./types";
 
 export class ApiError extends Error {
   readonly code: string;
@@ -46,6 +46,33 @@ export class ApiClient {
   async getJob(jobId: string): Promise<JobState> {
     const response = await fetch(`${this.baseUrl}/api/jobs/${jobId}`);
     return parseOrThrow<JobState>(response);
+  }
+
+  /** Текущий пользователь или `null`, если сессии нет. */
+  async me(): Promise<Me | null> {
+    const response = await fetch(`${this.baseUrl}/api/me`);
+    if (response.status === 401) return null;
+    return parseOrThrow<Me>(response);
+  }
+
+  /** Просит письмо со ссылкой входа. Ответ одинаков для любого адреса. */
+  async requestLogin(email: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/api/auth/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new ApiError(
+        (body as { error?: string }).error ?? "unknown_error",
+        response.status,
+      );
+    }
+  }
+
+  async logout(): Promise<void> {
+    await fetch(`${this.baseUrl}/api/auth/logout`, { method: "POST" });
   }
 
   stemUrl(trackId: string, kind: StemKind): string {

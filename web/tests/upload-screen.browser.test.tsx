@@ -4,6 +4,14 @@ import { render } from "vitest-browser-react";
 import { ApiError } from "../src/api/client";
 import type { ApiClient } from "../src/api/client";
 import { UploadScreen } from "../src/features/upload/UploadScreen";
+import type { Me } from "../src/api/types";
+
+const ME: Me = {
+  email: "ivan@example.com",
+  plan: "free",
+  operations_used: 1,
+  operations_limit: 3,
+};
 
 /** Клиент, у которого экран трогает только загрузку. */
 function fakeClient(
@@ -23,7 +31,7 @@ describe("UploadScreen", () => {
       vi.fn(async () => ({ trackId: "t1", jobId: "j1" })),
     );
 
-    render(<UploadScreen client={client} onUploaded={onUploaded} />);
+    render(<UploadScreen client={client} me={ME} onUploaded={onUploaded} onLogout={vi.fn()} />);
     const input = await fileInput();
     await userSelects(input, wavFile());
 
@@ -39,7 +47,7 @@ describe("UploadScreen", () => {
       }),
     );
 
-    render(<UploadScreen client={client} onUploaded={vi.fn()} />);
+    render(<UploadScreen client={client} me={ME} onUploaded={vi.fn()} onLogout={vi.fn()} />);
     const input = await fileInput();
     await userSelects(input, wavFile("song.m4a"));
 
@@ -55,13 +63,50 @@ describe("UploadScreen", () => {
       }),
     );
 
-    render(<UploadScreen client={client} onUploaded={vi.fn()} />);
+    render(<UploadScreen client={client} me={ME} onUploaded={vi.fn()} onLogout={vi.fn()} />);
     const input = await fileInput();
     await userSelects(input, wavFile());
 
     await expect
       .element(page.getByRole("alert"))
       .toHaveTextContent("Не удалось загрузить файл");
+  });
+
+  it("исчерпанный лимит объясняется словами, а не кодом", async () => {
+    const client = fakeClient(
+      vi.fn(async () => {
+        throw new ApiError("quota_exceeded", 429);
+      }),
+    );
+
+    render(
+      <UploadScreen
+        client={client}
+        me={{ ...ME, operations_used: 3 }}
+        onUploaded={vi.fn()}
+        onLogout={vi.fn()}
+      />,
+    );
+    const input = await fileInput();
+    await userSelects(input, wavFile());
+
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("три трека в месяц");
+  });
+
+  it("показывает остаток и адрес", async () => {
+    render(
+      <UploadScreen
+        client={fakeClient(vi.fn())}
+        me={ME}
+        onUploaded={vi.fn()}
+        onLogout={vi.fn()}
+      />,
+    );
+
+    await expect.element(page.getByText(/осталось 2 из 3/)).toBeVisible();
+    await expect.element(page.getByText(/ivan@example.com/)).toBeVisible();
   });
 
   it("после сбоя тот же файл можно выбрать снова", async () => {
@@ -71,7 +116,12 @@ describe("UploadScreen", () => {
       throw new ApiError("upload_failed", 500);
     });
     render(
-      <UploadScreen client={fakeClient(uploadTrack)} onUploaded={vi.fn()} />,
+      <UploadScreen
+        client={fakeClient(uploadTrack)}
+        me={ME}
+        onUploaded={vi.fn()}
+        onLogout={vi.fn()}
+      />,
     );
     const input = await fileInput();
 

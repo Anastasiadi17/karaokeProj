@@ -1,7 +1,24 @@
 import { expect, test } from "@playwright/test";
 
+/**
+ * Вход обязателен, поэтому каждый сценарий начинается с него.
+ *
+ * Письмо в сквозном тесте не прочитать, поэтому API поднимается с
+ * `KARAOKE_EXPOSE_LOGIN_LINK=1` и отдаёт ссылку прямо в ответе. Флаг
+ * существует только для разработки и при старте пишет об этом в лог.
+ */
+async function signIn(page: import("@playwright/test").Page) {
+  const response = await page.request.post("/api/auth/request", {
+    data: { email: `e2e-${Date.now()}@example.com` },
+  });
+  const { link } = (await response.json()) as { link: string };
+  const url = new URL(link);
+  await page.goto(`${url.pathname}${url.search}`);
+  await expect(page.getByRole("heading", { name: "Загрузите трек" })).toBeVisible();
+}
+
 test("путь от загрузки до скачанного микса", async ({ page }) => {
-  await page.goto("/");
+  await signIn(page);
 
   await page.setInputFiles('input[type="file"]', "e2e/fixtures/sample.wav");
 
@@ -24,7 +41,7 @@ test("путь от загрузки до скачанного микса", asyn
 });
 
 test("дубль не теряется, когда минусовка доиграла сама", async ({ page }) => {
-  await page.goto("/");
+  await signIn(page);
 
   await page.setInputFiles('input[type="file"]', "e2e/fixtures/sample.wav");
   await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
@@ -45,7 +62,7 @@ test("дубль не теряется, когда минусовка доигр
 });
 
 test("микс можно послушать до скачивания", async ({ page }) => {
-  await page.goto("/");
+  await signIn(page);
 
   await page.setInputFiles('input[type="file"]', "e2e/fixtures/sample.wav");
   await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
@@ -73,7 +90,7 @@ test("микс можно послушать до скачивания", async (
 });
 
 test("трек можно убрать с сервера, не теряя студию", async ({ page }) => {
-  await page.goto("/");
+  await signIn(page);
 
   await page.setInputFiles('input[type="file"]', "e2e/fixtures/sample.wav");
   await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
@@ -88,7 +105,7 @@ test("трек можно убрать с сервера, не теряя сту
 });
 
 test("понятная ошибка на неподходящем файле", async ({ page }) => {
-  await page.goto("/");
+  await signIn(page);
 
   await page.setInputFiles('input[type="file"]', {
     name: "junk.mp3",
