@@ -22,20 +22,25 @@ export function PricingScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function go(action: "checkout" | "portal") {
+  async function go(action: "checkout" | "portal" | "credits") {
     setBusy(true);
     setError(null);
     try {
-      window.location.href =
-        action === "checkout"
-          ? await client.startCheckout()
-          : await client.openPortal();
+      if (action === "checkout") {
+        window.location.href = await client.startCheckout();
+      } else if (action === "portal") {
+        window.location.href = await client.openPortal();
+      } else {
+        window.location.href = await client.buyCredits();
+      }
     } catch {
       setBusy(false);
       setError(
         action === "checkout"
           ? "Оплата сейчас недоступна. На бесплатном тарифе всё продолжает работать."
-          : "Управление подпиской сейчас недоступно.",
+          : action === "portal"
+            ? "Управление подпиской сейчас недоступно."
+            : "Покупка кредитов сейчас недоступна.",
       );
     }
   }
@@ -77,11 +82,14 @@ export function PricingScreen({
 
       <article>
         <h2>Кредиты</h2>
+        <p>Сейчас на счету {me.credits}.</p>
         <p>
-          Сейчас на счету {me.credits}. Кредиты понадобятся для AI-функций —
-          их пока нет, и купить пакет нельзя: продавать то, что не работает,
-          мы не станем.
+          Кредиты понадобятся для AI-функций. Их пока нет — купленное
+          дождётся: кредиты не сгорают.
         </p>
+        <button disabled={busy} onClick={() => void go("credits")}>
+          Купить пакет
+        </button>
       </article>
 
       {error && <p role="alert">{error}</p>}

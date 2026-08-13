@@ -199,10 +199,15 @@ def _post_form(url: str, data: dict[str, str], secret_key: str) -> dict:
 
 def create_checkout_session(secret_key: str, price_id: str, user_id: str,
                             email: str, base_url: str,
-                            post=_post_form) -> str:
-    """Возвращает адрес, куда отправить человека платить."""
+                            post=_post_form, mode: str = "subscription",
+                            metadata: dict[str, str] | None = None) -> str:
+    """Возвращает адрес, куда отправить человека платить.
+
+    `mode` различает подписку и разовую покупку пакета кредитов — по нему же
+    вебхук потом решает, что начислять.
+    """
     data = {
-        "mode": "subscription",
+        "mode": mode,
         "line_items[0][price]": price_id,
         "line_items[0][quantity]": "1",
         # Адрес подставляется, но человек может его в Checkout поменять,
@@ -212,6 +217,8 @@ def create_checkout_session(secret_key: str, price_id: str, user_id: str,
         "success_url": f"{base_url}/?paid=1",
         "cancel_url": f"{base_url}/",
     }
+    for key, value in (metadata or {}).items():
+        data[f"metadata[{key}]"] = value
     body = post(STRIPE_API, data, secret_key)
     url = body.get("url")
     if not url:

@@ -80,6 +80,15 @@ export class ApiClient {
     return body.url;
   }
 
+  /** Адрес оплаты пакета кредитов. */
+  async buyCredits(): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/api/billing/credits`, {
+      method: "POST",
+    });
+    const body = await parseOrThrow<{ url: string }>(response);
+    return body.url;
+  }
+
   /** Адрес портала Stripe: отмена подписки, смена карты, счета. */
   async openPortal(): Promise<string> {
     const response = await fetch(`${this.baseUrl}/api/billing/portal`, {

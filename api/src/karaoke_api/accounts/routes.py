@@ -133,6 +133,27 @@ def build_router(settings: Settings) -> APIRouter:
 
         return {"url": url}
 
+    @router.post("/api/billing/credits")
+    async def buy_credits(request: Request):
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+        if not settings.stripe_secret_key or not settings.credit_pack_price_id:
+            return _error("credits_not_configured", status=503)
+
+        try:
+            url = await asyncio.to_thread(
+                billing.create_checkout_session,
+                settings.stripe_secret_key, settings.credit_pack_price_id,
+                user.id, user.email, settings.public_base_url,
+                mode="payment",
+                metadata={"credits": str(settings.credit_pack_size)},
+            )
+        except StripeError:
+            log.exception("Stripe не отдал сессию покупки кредитов")
+            return _error("billing_unavailable", status=502)
+        return {"url": url, "credits": settings.credit_pack_size}
+
     @router.post("/api/billing/portal")
     async def open_portal(request: Request):
         user = current_user(request)

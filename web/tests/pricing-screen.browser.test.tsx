@@ -63,6 +63,25 @@ describe("PricingScreen", () => {
       .toHaveTextContent("Оплата сейчас недоступна");
   });
 
+  it("недоступная покупка кредитов тоже объясняется", async () => {
+    const buyCredits = vi.fn(async () => {
+      throw new ApiError("credits_not_configured", 503);
+    });
+
+    render(
+      <PricingScreen
+        client={client({ buyCredits })}
+        me={FREE}
+        onBack={vi.fn()}
+      />,
+    );
+    await page.getByRole("button", { name: "Купить пакет" }).click();
+
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("Покупка кредитов сейчас недоступна");
+  });
+
   it("цена и условия названы прямо", async () => {
     render(<PricingScreen client={client({})} me={FREE} onBack={vi.fn()} />);
 

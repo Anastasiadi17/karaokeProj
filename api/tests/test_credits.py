@@ -136,3 +136,69 @@ def test_subscription_payment_does_not_grant_credits(client):
     body = client.get("/api/me").json()
     assert body["plan"] == "pro"
     assert body["credits"] == 0
+
+
+# --- покупка пакета ----------------------------------------------------
+
+
+def test_buying_credits_needs_a_session(client):
+    assert client.post("/api/billing/credits").status_code == 401
+
+
+def test_buying_credits_without_price_is_503(client):
+    login(client, "ivan@example.com")
+
+    response = client.post("/api/billing/credits")
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "credits_not_configured"
+
+
+def test_credit_session_is_a_one_time_payment_with_the_pack_size():
+    """Размер пакета уходит в metadata — оттуда его берёт вебхук."""
+    from karaoke_api.accounts.billing import create_checkout_session
+
+    sent = {}
+
+    def fake_post(url, data, key):
+        sent["data"] = data
+        return {"url": "https://checkout.stripe.com/c/pay/cs_credits"}
+
+    create_checkout_session(
+        "sk", "price_credits", "user-42", "ivan@example.com",
+        "https://karaoke.example", post=fake_post,
+        mode="payment", metadata={"credits": "100"},
+    )
+
+    assert sent["data"]["mode"] == "payment"
+    assert sent["data"]["metadata[credits]"] == "100"
+    assert sent["data"]["client_reference_id"] == "user-42"
+
+
+def test_configured_pack_reaches_stripe(tmp_path, monkeypatch):
+    from karaoke_api.accounts import billing
+
+    captured = {}
+
+    def fake_session(secret, price, user_id, email, base_url, **kwargs):
+        captured.update({"price": price, "kwargs": kwargs})
+        return "https://checkout.stripe.com/c/pay/cs_credits"
+
+    monkeypatch.setattr(billing, "create_checkout_session", fake_session)
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+        stripe_secret_key="sk_test_x",
+        credit_pack_price_id="price_credits",
+        credit_pack_size=250,
+    )
+    with TestClient(create_app(settings)) as c:
+        login(c, "ivan@example.com")
+        body = c.post("/api/billing/credits").json()
+
+    assert body["credits"] == 250
+    assert captured["price"] == "price_credits"
+    assert captured["kwargs"]["mode"] == "payment"
+    assert captured["kwargs"]["metadata"] == {"credits": "250"}
