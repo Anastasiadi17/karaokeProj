@@ -96,6 +96,9 @@ def apply_event(accounts, event: dict) -> bool:
         accounts.set_subscription(
             user.id, "pro", "active", _period_end(data),
             data.get("subscription"),
+            # Идентификатор клиента нужен порталу: без него человеку негде
+            # отменить подписку и поменять карту.
+            data.get("customer"),
         )
         return True
 
@@ -196,4 +199,26 @@ def create_checkout_session(secret_key: str, price_id: str, user_id: str,
     url = body.get("url")
     if not url:
         raise StripeError(f"ответ без url: {str(body)[:200]}")
+    return url
+
+
+PORTAL_API = "https://api.stripe.com/v1/billing_portal/sessions"
+
+
+def create_portal_session(secret_key: str, customer_id: str, base_url: str,
+                          post=_post_form) -> str:
+    """Адрес портала Stripe: отмена подписки, смена карты, счета.
+
+    Своего экрана управления подпиской нет намеренно: всё, что там нужно,
+    Stripe уже умеет, а нам это стоило бы обработки отмен, пропорций возврата
+    и хранения истории платежей.
+
+    Против живого Stripe не выполнялось, как и Checkout.
+    """
+    body = post(PORTAL_API,
+                {"customer": customer_id, "return_url": f"{base_url}/"},
+                secret_key)
+    url = body.get("url")
+    if not url:
+        raise StripeError(f"портал без url: {str(body)[:200]}")
     return url

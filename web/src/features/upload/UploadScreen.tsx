@@ -52,6 +52,23 @@ export function UploadScreen({
         из {me.operations_limit} треков в этом месяце{" "}
         <button onClick={onLogout}>Выйти</button>
       </p>
+      {me.plan === "pro" && (
+        <p>
+          <button
+            onClick={async () => {
+              try {
+                // Отмена, карта и счета живут у Stripe: своего экрана
+                // управления подпиской нет намеренно.
+                window.location.href = await client.openPortal();
+              } catch {
+                setError("Управление подпиской сейчас недоступно.");
+              }
+            }}
+          >
+            Управлять подпиской
+          </button>
+        </p>
+      )}
       {me.plan === "free" && (
         <p>
           <button

@@ -260,3 +260,105 @@ def test_stripe_failure_becomes_502(tmp_path, monkeypatch):
 
     assert response.status_code == 502
     assert response.json()["error"] == "billing_unavailable"
+
+
+# --- портал и почта ----------------------------------------------------
+
+
+def test_portal_needs_a_subscription(client):
+    login(client, "ivan@example.com")
+
+    response = client.post("/api/billing/portal")
+
+    # Ключа в этой фикстуре нет, поэтому сначала 503; проверяем именно его,
+    # чтобы отличить «биллинг выключен» от «подписки не было».
+    assert response.status_code == 503
+
+
+def test_portal_without_subscription_is_409(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+        stripe_secret_key="sk_test_x",
+    )
+    with TestClient(create_app(settings)) as c:
+        login(c, "ivan@example.com")
+        response = c.post("/api/billing/portal")
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "no_subscription"
+
+
+def test_payment_remembers_the_customer_for_the_portal(client):
+    login(client, "ivan@example.com")
+    event = _paid("ivan@example.com")
+    event["data"]["object"]["customer"] = "cus_1"
+
+    _send(client, event)
+
+    accounts = client.app.state.karaoke.accounts
+    user = accounts.user_by_email("ivan@example.com")
+    assert accounts.customer_id(user.id) == "cus_1"
+
+
+def test_portal_session_asks_stripe_for_the_customer():
+    from karaoke_api.accounts.billing import create_portal_session
+
+    sent = {}
+
+    def fake_post(url, data, key):
+        sent.update({"url": url, "data": data})
+        return {"url": "https://billing.stripe.com/p/session_1"}
+
+    url = create_portal_session("sk", "cus_1", "https://karaoke.example",
+                                post=fake_post)
+
+    assert url.startswith("https://billing.stripe.com/")
+    assert sent["data"]["customer"] == "cus_1"
+    assert sent["data"]["return_url"] == "https://karaoke.example/"
+
+
+def test_letter_goes_to_the_log_without_smtp(tmp_path, caplog):
+    from karaoke_api.accounts.mail import send_login_link
+
+    settings = Settings(data_dir=tmp_path, db_path=tmp_path / "db")
+    with caplog.at_level("INFO"):
+        send_login_link(settings, "ivan@example.com", "https://x/callback?token=t")
+
+    assert "https://x/callback?token=t" in caplog.text
+
+
+def test_letter_is_sent_when_smtp_is_configured(tmp_path):
+    from karaoke_api.accounts.mail import send_login_link
+
+    settings = Settings(data_dir=tmp_path, db_path=tmp_path / "db",
+                        smtp_host="smtp.example", smtp_from="bot@example")
+    sent = {}
+
+    def fake_send(_settings, message):
+        sent["to"] = message["To"]
+        sent["body"] = message.get_content()
+
+    send_login_link(settings, "ivan@example.com", "https://x/t", send=fake_send)
+
+    assert sent["to"] == "ivan@example.com"
+    assert "https://x/t" in sent["body"]
+
+
+def test_broken_smtp_does_not_leak_through_the_answer(tmp_path, caplog):
+    """Сбой доставки не должен менять ответ: иначе по коду видно, кому
+    письмо ушло, а кому нет."""
+    from karaoke_api.accounts.mail import send_login_link
+
+    settings = Settings(data_dir=tmp_path, db_path=tmp_path / "db",
+                        smtp_host="smtp.example")
+
+    def boom(*_args):
+        raise OSError("сервер недоступен")
+
+    with caplog.at_level("ERROR"):
+        send_login_link(settings, "ivan@example.com", "https://x/t",
+                        send=boom)
+
+    assert "не удалось отправить" in caplog.text

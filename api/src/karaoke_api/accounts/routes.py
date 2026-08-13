@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from ..config import Settings
 from . import billing
 from .billing import BadSignature, StripeError, apply_event, verify_signature
+from .mail import send_login_link
 from .store import User, normalize_email
 
 log = logging.getLogger(__name__)
@@ -62,8 +63,7 @@ def build_router(settings: Settings) -> APIRouter:
         accounts = request.app.state.karaoke.accounts
         raw = accounts.create_login_token(email)
         link = f"{settings.public_base_url}/api/auth/callback?token={raw}"
-        # Единственная доставка на этом этапе.
-        log.info("ссылка для входа %s: %s", email, link)
+        send_login_link(settings, email, link)
 
         if settings.expose_login_link:
             # Только с явно включённым флагом — см. config.py.
@@ -131,6 +131,31 @@ def build_router(settings: Settings) -> APIRouter:
             log.exception("Stripe не отдал сессию оплаты")
             return _error("billing_unavailable", status=502)
 
+        return {"url": url}
+
+    @router.post("/api/billing/portal")
+    async def open_portal(request: Request):
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+        if not settings.stripe_secret_key:
+            return _error("billing_not_configured", status=503)
+
+        accounts = request.app.state.karaoke.accounts
+        customer = accounts.customer_id(user.id)
+        if customer is None:
+            # Портал открывать нечего: подписки не было ни разу.
+            return _error("no_subscription", status=409)
+
+        try:
+            url = await asyncio.to_thread(
+                billing.create_portal_session,
+                settings.stripe_secret_key, customer,
+                settings.public_base_url,
+            )
+        except StripeError:
+            log.exception("Stripe не отдал портал")
+            return _error("billing_unavailable", status=502)
         return {"url": url}
 
     @router.post("/api/billing/webhook")

@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     plan               TEXT NOT NULL,
     status             TEXT NOT NULL,
     current_period_end TEXT,
-    stripe_subscription_id TEXT
+    stripe_subscription_id TEXT,
+    stripe_customer_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS webhook_events (
@@ -115,6 +116,16 @@ class AccountStore:
         # вместо того, чтобы подождать миллисекунду.
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
+        # SQLite не знает ADD COLUMN IF NOT EXISTS, а схема накатывается на
+        # каждом старте: у баз, созданных до портала, колонки ещё нет.
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(subscriptions)")
+        }
+        if "stripe_customer_id" not in columns:
+            self._conn.execute(
+                "ALTER TABLE subscriptions ADD COLUMN stripe_customer_id TEXT"
+            )
         self._conn.commit()
 
     def close(self) -> None:
@@ -239,21 +250,33 @@ class AccountStore:
 
     # --- подписки ---------------------------------------------------
 
+    def customer_id(self, user_id: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT stripe_customer_id FROM subscriptions"
+                " WHERE user_id = ?", (user_id,),
+            ).fetchone()
+        return row["stripe_customer_id"] if row else None
+
     def set_subscription(self, user_id: str, plan: str, status: str,
                          current_period_end: datetime | None = None,
-                         stripe_subscription_id: str | None = None) -> None:
+                         stripe_subscription_id: str | None = None,
+                         stripe_customer_id: str | None = None) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO subscriptions (user_id, plan, status,"
-                " current_period_end, stripe_subscription_id)"
-                " VALUES (?, ?, ?, ?, ?)"
+                " current_period_end, stripe_subscription_id,"
+                " stripe_customer_id) VALUES (?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan,"
                 " status = excluded.status,"
                 " current_period_end = excluded.current_period_end,"
-                " stripe_subscription_id = excluded.stripe_subscription_id",
+                " stripe_subscription_id = excluded.stripe_subscription_id,"
+                " stripe_customer_id ="
+                " COALESCE(excluded.stripe_customer_id,"
+                " subscriptions.stripe_customer_id)",
                 (user_id, plan, status,
                  current_period_end.isoformat() if current_period_end else None,
-                 stripe_subscription_id),
+                 stripe_subscription_id, stripe_customer_id),
             )
             self._conn.commit()
 
