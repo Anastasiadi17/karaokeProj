@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from karaoke_api import deps
+from .conftest import login
 from karaoke_api.config import Settings
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.runner import JobRunner
@@ -288,9 +289,11 @@ def test_warmup_runs_before_the_first_job_is_claimed(tmp_path, monkeypatch,
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
 
     with TestClient(create_app(settings)) as client:
+        login(client)
         with open(make_wav(duration_sec=0.5), "rb") as fh:
             ids = client.post(
                 "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}

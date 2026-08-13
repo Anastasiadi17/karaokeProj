@@ -10,6 +10,7 @@ from karaoke_api.cleanup import (
     purge_orphan_track_dirs,
     purge_track,
 )
+from .conftest import login
 from karaoke_api.config import Settings
 from karaoke_api.deps import AppState
 from karaoke_api.jobs.runner import JobRunner
@@ -52,8 +53,10 @@ def test_delete_endpoint_removes_track(tmp_path, make_wav):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     with TestClient(create_app(settings)) as client:
+        login(client)
         with open(make_wav(duration_sec=0.5), "rb") as fh:
             ids = client.post(
                 "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}
@@ -73,8 +76,10 @@ def test_delete_endpoint_reports_locked_files_instead_of_crashing(tmp_path,
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     with TestClient(create_app(settings)) as client:
+        login(client)
         with open(make_wav(duration_sec=0.5), "rb") as fh:
             ids = client.post(
                 "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}
@@ -100,8 +105,10 @@ def test_delete_unknown_track_is_404(tmp_path):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     with TestClient(create_app(settings)) as client:
+        login(client)
         assert client.delete("/api/tracks/nope").status_code == 404
 
 
@@ -153,12 +160,14 @@ def test_delete_during_processing_leaves_no_files(tmp_path, make_wav,
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     monkeypatch.setattr(
         deps, "build_separator", lambda s, gpu=None: slow_separator
     )
 
     with TestClient(create_app(settings)) as client:
+        login(client)
         with open(make_wav(duration_sec=0.5), "rb") as fh:
             ids = client.post(
                 "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}
@@ -216,6 +225,7 @@ def test_runner_shares_the_track_lock_with_app_state(tmp_path):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     state = AppState.build(settings)
     try:
@@ -231,9 +241,11 @@ def test_delete_answers_503_when_the_lock_is_busy(tmp_path, make_wav):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
         track_lock_timeout_sec=0.05,
     )
     with TestClient(create_app(settings)) as client:
+        login(client)
         with open(make_wav(duration_sec=0.5), "rb") as fh:
             ids = client.post(
                 "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}

@@ -3,6 +3,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from .conftest import login
 from karaoke_api.config import Settings
 from karaoke_api.main import create_app
 
@@ -13,8 +14,10 @@ def client(tmp_path):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     with TestClient(create_app(settings)) as c:
+        login(c)
         yield c
 
 

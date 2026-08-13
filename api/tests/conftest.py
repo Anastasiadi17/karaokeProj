@@ -46,6 +46,21 @@ class SlowSeparator:
         return FakeSeparator().separate(source, out_dir, on_progress)
 
 
+SESSION_COOKIE = "karaoke_session"
+
+
+def login(client, email: str = "test@example.com"):
+    """Сажает клиента в сессию, минуя почту.
+
+    Ссылку из письма гоняет только `test_login.py` — там это и проверяется.
+    Остальным тестам вход не интересен, интересен вошедший пользователь.
+    """
+    accounts = client.app.state.karaoke.accounts
+    user = accounts.upsert_user(email)
+    client.cookies.set(SESSION_COOKIE, accounts.create_session(user.id))
+    return user
+
+
 @pytest.fixture
 def slow_separator():
     return SlowSeparator(delay=1.0)

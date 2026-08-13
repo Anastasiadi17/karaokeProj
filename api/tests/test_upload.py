@@ -5,6 +5,7 @@ import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
+from .conftest import login
 from karaoke_api.config import Settings
 from karaoke_api.main import create_app
 
@@ -15,11 +16,13 @@ def client(tmp_path):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
         max_duration_sec=5,
         max_upload_bytes=1_000_000,
     )
     app = create_app(settings)
     with TestClient(app) as c:
+        login(c)
         yield c
 
 

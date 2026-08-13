@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from karaoke_api import deps
+from .conftest import login
 from karaoke_api.config import Settings
 from karaoke_api.jobs.models import JobStatus
 from karaoke_api.jobs.store import JobStore
@@ -14,6 +15,7 @@ def slow_app(tmp_path, monkeypatch, slow_separator):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",
         separator="fake",
+        free_monthly_operations=100,
     )
     monkeypatch.setattr(
         deps, "build_separator", lambda s, gpu=None: slow_separator
@@ -31,6 +33,7 @@ def test_shutdown_waits_for_running_job(slow_app, make_wav):
     settings, separator = slow_app
 
     with TestClient(create_app(settings)) as client:
+        login(client)
         with open(make_wav(duration_sec=0.5), "rb") as fh:
             ids = client.post(
                 "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}

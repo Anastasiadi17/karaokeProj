@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .accounts.routes import build_router as build_accounts_router
+from .accounts.routes import current_user, month_start
 from .audio.probe import UnsupportedAudio, normalize_format, probe_audio
 from .cleanup import purge_expired, purge_orphan_track_dirs, purge_track
 from .config import Settings, get_settings
@@ -152,6 +153,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state: AppState = request.app.state.karaoke
         limits = state.settings
 
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+
+        used = state.accounts.count_operations(user.id, month_start())
+        if used >= limits.free_monthly_operations:
+            return _error("quota_exceeded", status=429)
+
         with tempfile.TemporaryDirectory() as tmp:
             staged = Path(tmp) / "upload"
             size = 0
@@ -186,17 +195,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             key = f"tracks/{track_id}/original.{fmt}"
             state.storage.store_file(key, staged)
             state.store.create_track(
-                track_id, file.filename or "upload", key, info.duration_sec
+                track_id, file.filename or "upload", key, info.duration_sec,
+                user_id=user.id,
             )
 
         job_id = state.store.create_job(track_id)
+        # Операция засчитывается последней: отказ по формату, длине или
+        # размеру не должен съедать одну из трёх бесплатных.
+        state.accounts.record_operation(user.id, "separate", track_id)
         return {"track_id": track_id, "job_id": job_id}
+
+    def _owns(request: Request, track_id: str) -> bool:
+        """Чужой трек для клиента не существует.
+
+        Отвечать 403 значило бы подтверждать, что такой идентификатор есть у
+        кого-то другого, — а это ровно то, чего знать не надо.
+        """
+        state: AppState = request.app.state.karaoke
+        track = state.store.get_track(track_id)
+        if track is None:
+            return False
+        if track.user_id is None:
+            # Загружен до аккаунтов: остаётся доступным, пока не истечёт срок
+            # хранения. Осознанная уступка, а не недосмотр.
+            return True
+        user = current_user(request)
+        return user is not None and user.id == track.user_id
 
     @app.get("/api/jobs/{job_id}")
     async def get_job(request: Request, job_id: str):
         state: AppState = request.app.state.karaoke
         job = state.store.get_job(job_id)
         if job is None:
+            return _error("not_found", status=404)
+        if not _owns(request, job.track_id):
             return _error("not_found", status=404)
         return {
             "status": job.status.value,
@@ -217,7 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Хранилище — не источник истины о том, что трек существует. Файлы
         # могут пережить удаление строки (гонка с работающей задачей, сбой
         # уборки), и отдавать их после этого нельзя: для клиента трек удалён.
-        if state.store.get_track(track_id) is None:
+        if not _owns(request, track_id):
             return _error("not_found", status=404)
 
         key = f"tracks/{track_id}/stems/{kind}.wav"
@@ -254,7 +286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.delete("/api/tracks/{track_id}", status_code=204)
     async def delete_track(request: Request, track_id: str):
         state: AppState = request.app.state.karaoke
-        if state.store.get_track(track_id) is None:
+        if not _owns(request, track_id):
             return _error("not_found", status=404)
         try:
             # Целиком в отдельный поток: ожидание замка не должно вставать

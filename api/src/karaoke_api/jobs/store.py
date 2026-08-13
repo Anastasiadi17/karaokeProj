@@ -61,7 +61,21 @@ class JobStore:
         # чужую запись без ожидания SQLite встретит «database is locked».
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
+        self._add_column_if_missing("tracks", "user_id", "TEXT")
         self._conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str,
+                               decl: str) -> None:
+        """SQLite не знает `ADD COLUMN IF NOT EXISTS`, а миграций у нас нет:
+        схема накатывается на каждом старте, и повторный ALTER упал бы."""
+        existing = {
+            row["name"]
+            for row in self._conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in existing:
+            self._conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -70,14 +84,15 @@ class JobStore:
     # --- треки ---------------------------------------------------------
 
     def create_track(self, track_id: str, filename: str, storage_key: str,
-                     duration_sec: float) -> str:
+                     duration_sec: float, user_id: str | None = None) -> str:
         """Идентификатор приходит снаружи: ключ в хранилище строится из него,
         поэтому к моменту вставки он уже известен."""
         with self._lock:
             self._conn.execute(
                 "INSERT INTO tracks (id, filename, storage_key, duration_sec,"
-                " created_at) VALUES (?, ?, ?, ?, ?)",
-                (track_id, filename, storage_key, duration_sec, _now()),
+                " created_at, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (track_id, filename, storage_key, duration_sec, _now(),
+                 user_id),
             )
             self._conn.commit()
         return track_id
@@ -95,6 +110,7 @@ class JobStore:
             storage_key=row["storage_key"],
             duration_sec=row["duration_sec"],
             created_at=_parse_dt(row["created_at"]),
+            user_id=row["user_id"],
         )
 
     def list_expired_tracks(self, cutoff: datetime) -> list[str]:

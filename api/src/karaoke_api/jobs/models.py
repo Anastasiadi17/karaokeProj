@@ -25,6 +25,9 @@ class Track:
     storage_key: str
     duration_sec: float
     created_at: datetime
+    # None у треков, загруженных до появления аккаунтов: они бесхозные и
+    # доживают до уборки по сроку хранения.
+    user_id: str | None = None
 
 
 @dataclass(frozen=True)
