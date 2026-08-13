@@ -40,6 +40,20 @@ export function StudioScreen({
         </button>
       </div>
 
+      <p>
+        {s.mastering ? (
+          "Улучшение звучания включено: громче, ровнее, без гула. Оно попадёт " +
+          "и в прослушивание, и в файл."
+        ) : (
+          <button
+            disabled={s.recording || s.mixing}
+            onClick={() => void s.enableMastering()}
+          >
+            Улучшить звучание (1 кредит)
+          </button>
+        )}
+      </p>
+
       {plan === "free" && (
         <p>
           В бесплатном экспорте есть короткий сигнал каждые полминуты. На Pro

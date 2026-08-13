@@ -202,3 +202,58 @@ def test_configured_pack_reaches_stripe(tmp_path, monkeypatch):
     assert captured["price"] == "price_credits"
     assert captured["kwargs"]["mode"] == "payment"
     assert captured["kwargs"]["metadata"] == {"credits": "250"}
+
+
+# --- списание перед операцией ------------------------------------------
+
+
+def test_spending_needs_a_session(client):
+    assert client.post("/api/credits/spend",
+                       json={"kind": "mastering"}).status_code == 401
+
+
+def test_spending_takes_one_credit_and_returns_the_balance(client):
+    user = login(client, "ivan@example.com")
+    client.app.state.karaoke.accounts.add_credits(user.id, 3, "test")
+
+    response = client.post("/api/credits/spend", json={"kind": "mastering"})
+
+    assert response.status_code == 200
+    assert response.json() == {"balance": 2, "spent": 1}
+
+
+def test_spending_without_credits_is_402(client):
+    login(client, "ivan@example.com")
+
+    response = client.post("/api/credits/spend", json={"kind": "mastering"})
+
+    assert response.status_code == 402
+    assert response.json()["error"] == "insufficient_credits"
+    assert response.json()["balance"] == 0
+
+
+def test_unknown_operation_is_refused(client):
+    """Список видов закрытый: иначе клиент сам придумывает reason, и журнал
+    перестаёт отвечать на вопрос «куда делись кредиты»."""
+    user = login(client, "ivan@example.com")
+    client.app.state.karaoke.accounts.add_credits(user.id, 10, "test")
+
+    response = client.post("/api/credits/spend", json={"kind": "что угодно"})
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "unknown_operation"
+    assert client.get("/api/me").json()["credits"] == 10
+
+
+def test_spending_writes_the_kind_into_the_ledger(client):
+    user = login(client, "ivan@example.com")
+    accounts = client.app.state.karaoke.accounts
+    accounts.add_credits(user.id, 5, "purchase")
+
+    client.post("/api/credits/spend", json={"kind": "mastering"})
+
+    with accounts.connection() as conn:
+        reasons = [r["reason"] for r in conn.execute(
+            "SELECT reason FROM credit_ledger WHERE user_id = ?"
+            " ORDER BY created_at", (user.id,))]
+    assert reasons == ["purchase", "mastering"]

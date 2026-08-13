@@ -80,6 +80,17 @@ export class ApiClient {
     return body.url;
   }
 
+  /** Списывает кредит перед операцией. Бросает ApiError при нехватке. */
+  async spendCredit(kind: string): Promise<number> {
+    const response = await fetch(`${this.baseUrl}/api/credits/spend`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind }),
+    });
+    const body = await parseOrThrow<{ balance: number }>(response);
+    return body.balance;
+  }
+
   /** Адрес оплаты пакета кредитов. */
   async buyCredits(): Promise<string> {
     const response = await fetch(`${this.baseUrl}/api/billing/credits`, {

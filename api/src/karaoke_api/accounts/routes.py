@@ -133,6 +133,40 @@ def build_router(settings: Settings) -> APIRouter:
 
         return {"url": url}
 
+    # Виды операций, за которые вообще можно списывать. Список закрытый:
+    # иначе клиент сам придумывает reason, и журнал перестаёт быть ответом на
+    # вопрос «куда делись кредиты».
+    _SPENDABLE = {"mastering": 1}
+
+    @router.post("/api/credits/spend")
+    async def spend_credits(request: Request):
+        """Списывает кредит перед операцией, которую считает клиент.
+
+        Обработка живёт в браузере (иначе рушится юнит-экономика, 4.5), но
+        решение «платить или нет» клиенту доверять нельзя — это была бы
+        кнопка «сделать бесплатно» в DevTools.
+        """
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+
+        body = await request.json()
+        kind = str(body.get("kind", ""))
+        price = _SPENDABLE.get(kind)
+        if price is None:
+            return _error("unknown_operation")
+
+        accounts = request.app.state.karaoke.accounts
+        if not accounts.spend_credits(user.id, price, kind):
+            # 402: денег не хватило — это не ошибка запроса и не запрет.
+            return JSONResponse(
+                {"error": "insufficient_credits",
+                 "balance": accounts.credit_balance(user.id)},
+                status_code=402,
+            )
+
+        return {"balance": accounts.credit_balance(user.id), "spent": price}
+
     @router.post("/api/billing/credits")
     async def buy_credits(request: Request):
         user = current_user(request)

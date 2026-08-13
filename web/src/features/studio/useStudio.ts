@@ -10,6 +10,7 @@ import {
   saveOffset,
 } from "../../audio/latency";
 import { LevelMeter } from "../../audio/meter";
+import { master } from "../../audio/mastering";
 import { mixdown } from "../../audio/mixdown";
 import { Monitor } from "../../audio/monitor";
 import { playBuffer } from "../../audio/playback";
@@ -48,6 +49,7 @@ export function useStudio(
   const [recording, setRecording] = useState(false);
   const [mixing, setMixing] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [mastering, setMastering] = useState(false);
   const [trackDeleted, setTrackDeleted] = useState(false);
   const [hasTake, setHasTake] = useState(false);
   /** Сбой подготовки: студии нет и не будет, показывать нечего. */
@@ -236,14 +238,40 @@ export function useStudio(
     const take = takeRef.current;
     if (!music || !take) return null;
 
-    return mixdown(music, take, music.sampleRate, {
+    const mixed = await mixdown(music, take, music.sampleRate, {
       offsetSec,
       voiceGain,
       musicGain,
       reverbWet,
       watermark: plan !== "pro",
     });
-  }, [offsetSec, voiceGain, musicGain, reverbWet, plan]);
+
+    // Мастеринг включён — значит он в каждом последующем сведении: и в том,
+    // что человек слушает, и в том, что скачивает. Иначе прослушивание
+    // врало бы ровно там, где за него заплатили.
+    return mastering ? master(mixed) : mixed;
+  }, [offsetSec, voiceGain, musicGain, reverbWet, plan, mastering]);
+
+  /**
+   * Включает мастеринг, списав кредит.
+   *
+   * Списывает сервер: обработка идёт здесь, в браузере, но доверять клиенту
+   * решение «платить или нет» — это кнопка «сделать бесплатно» в DevTools.
+   */
+  const enableMastering = useCallback(async () => {
+    if (mastering) return;
+    setNotice(null);
+    try {
+      await client.spendCredit("mastering");
+      setMastering(true);
+    } catch (exc) {
+      setNotice(
+        exc instanceof ApiError && exc.code === "insufficient_credits"
+          ? "Не хватает кредитов. Пакет можно купить на странице тарифов."
+          : "Не удалось включить улучшение звучания. Попробуйте ещё раз.",
+      );
+    }
+  }, [client, mastering]);
 
   const previewMix = useCallback(async () => {
     const ctx = ctxRef.current;
@@ -351,6 +379,8 @@ export function useStudio(
     recording,
     mixing,
     previewing,
+    mastering,
+    enableMastering,
     trackDeleted,
     hasTake,
     error,
