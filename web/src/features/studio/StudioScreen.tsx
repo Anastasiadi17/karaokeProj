@@ -26,6 +26,12 @@ export function StudioScreen({
         )}
         <button
           disabled={!s.hasTake || s.mixing || s.recording}
+          onClick={() => void s.previewMix()}
+        >
+          {s.previewing ? "Остановить прослушивание" : "Прослушать"}
+        </button>
+        <button
+          disabled={!s.hasTake || s.mixing || s.recording}
           onClick={() => void s.exportMix()}
         >
           {s.mixing ? "Свожу…" : "Скачать микс"}
@@ -61,6 +67,9 @@ export function StudioScreen({
       </label>
 
       <label>
+        {/* Смещение подбирается на слух, поэтому рядом с ползунком должно
+            быть чем послушать: «Прослушать» собирает ровно тот микс, который
+            уйдёт в файл. */}
         Смещение записи: {(s.offsetSec * 1000).toFixed(0)} мс
         <input
           type="range"

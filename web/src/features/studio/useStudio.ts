@@ -12,6 +12,8 @@ import {
 import { LevelMeter } from "../../audio/meter";
 import { mixdown } from "../../audio/mixdown";
 import { Monitor } from "../../audio/monitor";
+import { playBuffer } from "../../audio/playback";
+import type { Playback } from "../../audio/playback";
 import { MIC_CONSTRAINTS, Recorder } from "../../audio/recorder";
 import type { Samples } from "../../audio/samples";
 
@@ -24,6 +26,7 @@ export function useStudio(client: ApiClient, trackId: string) {
   const streamRef = useRef<MediaStream | null>(null);
   const playbackRef = useRef<AudioBufferSourceNode | null>(null);
   const takeRef = useRef<Samples[] | null>(null);
+  const previewRef = useRef<Playback | null>(null);
   // Смещение, выставленное человеком или взятое из хранилища, оценка контекста
   // перебивать не имеет права.
   const offsetIsSetRef = useRef(false);
@@ -34,6 +37,7 @@ export function useStudio(client: ApiClient, trackId: string) {
   const [ready, setReady] = useState(false);
   const [recording, setRecording] = useState(false);
   const [mixing, setMixing] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [hasTake, setHasTake] = useState(false);
   /** Сбой подготовки: студии нет и не будет, показывать нечего. */
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +104,8 @@ export function useStudio(client: ApiClient, trackId: string) {
 
     return () => {
       cancelled = true;
+      previewRef.current?.stop();
+      previewRef.current = null;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       void ctxRef.current?.close();
     };
@@ -122,6 +128,11 @@ export function useStudio(client: ApiClient, trackId: string) {
   const setMonitorOn = useCallback((on: boolean) => {
     monitorRef.current?.setEnabled(on);
     setMonitorOnState(on);
+  }, []);
+
+  const stopPreview = useCallback(() => {
+    previewRef.current?.stop();
+    previewRef.current = null;
   }, []);
 
   const stopRecording = useCallback(() => {
@@ -153,6 +164,11 @@ export function useStudio(client: ApiClient, trackId: string) {
       // ни воспроизведения, ни кадров с микрофона не будет. Здесь мы внутри
       // обработчика нажатия — единственное место, где его пускают.
       if (ctx.state !== "running") await ctx.resume();
+
+      // Прослушивание и запись в одних наушниках несовместимы: старый микс
+      // попал бы в новый дубль через микрофон.
+      stopPreview();
+      setPreviewing(false);
 
       // `outputLatency` до первого рендера равен нулю: контекст создаётся при
       // входе на экран, а поднимается только здесь. Оценка, снятая раньше,
@@ -195,7 +211,62 @@ export function useStudio(client: ApiClient, trackId: string) {
           "закройте программу, которая его заняла, и нажмите «Записать» снова.",
       );
     }
-  }, [stopRecording]);
+  }, [stopRecording, stopPreview]);
+
+  /**
+   * Сводит дубль текущими настройками.
+   *
+   * Одна и та же сборка идёт и в файл, и в прослушивание — иначе
+   * прослушивание врало бы: человек подбирал бы смещение на одном звуке, а
+   * скачивал другой. Водяной знак поэтому включён и здесь.
+   */
+  const buildMix = useCallback(async (): Promise<AudioBuffer | null> => {
+    const music = musicRef.current;
+    const take = takeRef.current;
+    if (!music || !take) return null;
+
+    return mixdown(music, take, music.sampleRate, {
+      offsetSec,
+      voiceGain,
+      musicGain,
+      reverbWet,
+      watermark: true,
+    });
+  }, [offsetSec, voiceGain, musicGain, reverbWet]);
+
+  const previewMix = useCallback(async () => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+
+    if (previewRef.current) {
+      stopPreview();
+      setPreviewing(false);
+      return;
+    }
+
+    setMixing(true);
+    setNotice(null);
+    try {
+      // Тот же suspended, что и у записи: контекст поднимается только из
+      // обработчика нажатия.
+      if (ctx.state !== "running") await ctx.resume();
+
+      const mixed = await buildMix();
+      if (!mixed) return;
+
+      setPreviewing(true);
+      previewRef.current = playBuffer(ctx, mixed, () => {
+        previewRef.current = null;
+        setPreviewing(false);
+      });
+    } catch {
+      setNotice(
+        "Не удалось собрать микс для прослушивания. Попробуйте ещё раз.",
+      );
+    } finally {
+      setMixing(false);
+    }
+  }, [buildMix, stopPreview]);
 
   const exportMix = useCallback(async () => {
     const music = musicRef.current;
@@ -205,13 +276,8 @@ export function useStudio(client: ApiClient, trackId: string) {
     setMixing(true);
     setNotice(null);
     try {
-      const mixed = await mixdown(music, take, music.sampleRate, {
-        offsetSec,
-        voiceGain,
-        musicGain,
-        reverbWet,
-        watermark: true,
-      });
+      const mixed = await buildMix();
+      if (!mixed) return;
 
       const channels = Array.from({ length: mixed.numberOfChannels }, (_, ch) =>
         Float32Array.from(mixed.getChannelData(ch)),
@@ -226,7 +292,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     } finally {
       setMixing(false);
     }
-  }, [offsetSec, voiceGain, musicGain, reverbWet]);
+  }, [buildMix]);
 
   // Уровень читается только во время записи: клиппинг надо показать сразу,
   // а не после сведения, когда дубль уже испорчен.
@@ -252,6 +318,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     ready,
     recording,
     mixing,
+    previewing,
     hasTake,
     error,
     notice,
@@ -269,6 +336,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     setMonitorOn,
     startRecording,
     stopRecording,
+    previewMix,
     exportMix,
   };
 }

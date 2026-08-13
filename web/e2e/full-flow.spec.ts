@@ -44,6 +44,34 @@ test("дубль не теряется, когда минусовка доигр
   await expect(page.getByRole("button", { name: "Скачать микс" })).toBeEnabled();
 });
 
+test("микс можно послушать до скачивания", async ({ page }) => {
+  await page.goto("/");
+
+  await page.setInputFiles('input[type="file"]', "e2e/fixtures/sample.wav");
+  await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
+    timeout: 90_000,
+  });
+
+  await page.getByRole("button", { name: "Записать" }).click();
+  const stopButton = page.getByRole("button", { name: "Остановить", exact: true });
+  await expect(stopButton).toBeVisible();
+  await stopButton.click();
+
+  await page.getByRole("button", { name: "Прослушать" }).click();
+
+  // Кнопка переключилась — значит сведение собралось и играет.
+  const stopPreview = page.getByRole("button", {
+    name: "Остановить прослушивание",
+  });
+  await expect(stopPreview).toBeVisible({ timeout: 15_000 });
+
+  await stopPreview.click();
+  await expect(page.getByRole("button", { name: "Прослушать" })).toBeVisible();
+
+  // Прослушивание не должно мешать экспорту: дубль остаётся на месте.
+  await expect(page.getByRole("button", { name: "Скачать микс" })).toBeEnabled();
+});
+
 test("понятная ошибка на неподходящем файле", async ({ page }) => {
   await page.goto("/");
 
