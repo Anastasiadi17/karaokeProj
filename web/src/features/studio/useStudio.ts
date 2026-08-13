@@ -84,6 +84,25 @@ export function useStudio(client: ApiClient, trackId: string) {
     setMonitorOnState(on);
   }, []);
 
+  const stopRecording = useCallback(() => {
+    // Идемпотентно: сюда приходят и нажатие «Остановить», и конец минусовки,
+    // а `playback.stop()` из первого пути сам вызывает `onended`. Второй
+    // проход забрал бы у записи уже пустые буферы и стёр дубль.
+    if (!recorderRef.current?.isRecording) return;
+
+    playbackRef.current?.stop();
+    playbackRef.current = null;
+
+    takeRef.current = recorderRef.current?.stop() ?? null;
+    monitorRef.current?.detach();
+    meterRef.current?.detach();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+
+    setRecording(false);
+    setHasTake((takeRef.current?.[0].length ?? 0) > 0);
+  }, []);
+
   const startRecording = useCallback(async () => {
     const ctx = ctxRef.current;
     const music = musicRef.current;
@@ -110,7 +129,11 @@ export function useStudio(client: ApiClient, trackId: string) {
       playback.buffer = music;
       playback.connect(ctx.destination);
       playback.start();
-      playback.onended = () => setRecording(false);
+      // Песня, доигравшая до конца, обязана закрыть дубль так же, как нажатие
+      // «Остановить». Иначе воркет продолжает писать в никуда, дубль остаётся
+      // не забранным, а кнопка экспорта — серой: человек спел всё и потерял
+      // запись.
+      playback.onended = () => stopRecording();
       playbackRef.current = playback;
 
       setRecording(true);
@@ -120,21 +143,7 @@ export function useStudio(client: ApiClient, trackId: string) {
           "перезагрузите страницу.",
       );
     }
-  }, []);
-
-  const stopRecording = useCallback(() => {
-    playbackRef.current?.stop();
-    playbackRef.current = null;
-
-    takeRef.current = recorderRef.current?.stop() ?? null;
-    monitorRef.current?.detach();
-    meterRef.current?.detach();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-
-    setRecording(false);
-    setHasTake((takeRef.current?.[0].length ?? 0) > 0);
-  }, []);
+  }, [stopRecording]);
 
   const exportMix = useCallback(async () => {
     const music = musicRef.current;
