@@ -77,6 +77,29 @@ describe("ApiClient", () => {
     );
   });
 
+  it("отдаёт байты дорожки", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(bytes, { status: 200 })),
+    );
+
+    const buffer = await new ApiClient("http://api.test").fetchStem(
+      "t1",
+      "no_vocals",
+    );
+
+    expect(new Uint8Array(buffer)).toEqual(bytes);
+  });
+
+  it("пропавшая дорожка даёт ApiError, а не мусор в декодер", async () => {
+    stubFetch({ error: "not_found" }, 404);
+
+    await expect(
+      new ApiClient("http://api.test").fetchStem("t1", "no_vocals"),
+    ).rejects.toMatchObject({ code: "not_found", status: 404 });
+  });
+
   it("ApiError сохраняет код для неизвестных ошибок", async () => {
     stubFetch({}, 500);
     await expect(

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "../../api/client";
 import type { ApiClient } from "../../api/client";
 import { downloadBlob } from "../../audio/download";
 import { encodeWav } from "../../audio/encode";
@@ -41,8 +42,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     let cancelled = false;
 
     (async () => {
-      const response = await fetch(client.stemUrl(trackId, "no_vocals"));
-      const bytes = await response.arrayBuffer();
+      const bytes = await client.fetchStem(trackId, "no_vocals");
 
       const probe = new AudioContext();
       const decoded = await probe.decodeAudioData(bytes.slice(0));
@@ -64,7 +64,15 @@ export function useStudio(client: ApiClient, trackId: string) {
       setOffsetSecState(stored || estimateLatencySec(ctx));
       setReady(true);
     })().catch((exc: unknown) => {
-      if (!cancelled) setError(exc instanceof Error ? exc.message : String(exc));
+      if (cancelled) return;
+      setError(
+        exc instanceof ApiError
+          ? "Минусовка больше недоступна: трек мог быть удалён по истечении " +
+              "срока хранения. Загрузите файл заново."
+          : exc instanceof Error
+            ? exc.message
+            : String(exc),
+      );
     });
 
     return () => {

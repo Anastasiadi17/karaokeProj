@@ -52,6 +52,22 @@ export class ApiClient {
     return `${this.baseUrl}/api/tracks/${trackId}/stems/${kind}`;
   }
 
+  /**
+   * Дорожка байтами. Ответ проверяется до раскодирования: сервер на пропавшую
+   * дорожку отдаёт JSON с ошибкой, и без проверки этот JSON уехал бы в
+   * `decodeAudioData`, а человек увидел бы «Unable to decode audio data»
+   * вместо «трек удалён, загрузите заново».
+   */
+  async fetchStem(trackId: string, kind: StemKind): Promise<ArrayBuffer> {
+    const response = await fetch(this.stemUrl(trackId, kind));
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const code = (body as { error?: string }).error ?? "stem_unavailable";
+      throw new ApiError(code, response.status);
+    }
+    return response.arrayBuffer();
+  }
+
   async deleteTrack(trackId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/tracks/${trackId}`, {
       method: "DELETE",
