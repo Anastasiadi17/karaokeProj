@@ -25,3 +25,7 @@ dist-ssr
 
 # Генерируется скриптом e2e/make-fixture.mjs
 e2e/fixtures/
+
+# Артефакты падений браузерных тестов
+.vitest-attachments/
+tests/__screenshots__/
