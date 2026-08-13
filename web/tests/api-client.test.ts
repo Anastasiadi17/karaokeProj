@@ -100,6 +100,28 @@ describe("ApiClient", () => {
     ).rejects.toMatchObject({ code: "not_found", status: 404 });
   });
 
+  it("удаляет трек", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("http://api.test").deleteTrack("t1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe("http://api.test/api/tracks/t1");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("отказ на удалении не проходит молча", async () => {
+    stubFetch({ error: "delete_failed" }, 503);
+
+    await expect(
+      new ApiClient("http://api.test").deleteTrack("t1"),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+
   it("ApiError сохраняет код для неизвестных ошибок", async () => {
     stubFetch({}, 500);
     await expect(

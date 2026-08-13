@@ -38,6 +38,7 @@ export function useStudio(client: ApiClient, trackId: string) {
   const [recording, setRecording] = useState(false);
   const [mixing, setMixing] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [trackDeleted, setTrackDeleted] = useState(false);
   const [hasTake, setHasTake] = useState(false);
   /** Сбой подготовки: студии нет и не будет, показывать нечего. */
   const [error, setError] = useState<string | null>(null);
@@ -268,6 +269,27 @@ export function useStudio(client: ApiClient, trackId: string) {
     }
   }, [buildMix, stopPreview]);
 
+  /**
+   * Убирает исходник и дорожки с сервера, не трогая студию.
+   *
+   * Минусовка уже раскодирована в память вкладки, а дубль там и жил, — то
+   * есть после удаления можно спокойно допеть и скачать. Ради этого кнопка и
+   * существует: до неё единственным способом убрать свою музыку с чужого
+   * диска было дождаться уборки по сроку хранения.
+   */
+  const deleteTrack = useCallback(async () => {
+    setNotice(null);
+    try {
+      await client.deleteTrack(trackId);
+      setTrackDeleted(true);
+    } catch {
+      setNotice(
+        "Не удалось удалить трек с сервера. Попробуйте ещё раз; если " +
+          "не выходит, он всё равно исчезнет сам по истечении срока хранения.",
+      );
+    }
+  }, [client, trackId]);
+
   const exportMix = useCallback(async () => {
     const music = musicRef.current;
     const take = takeRef.current;
@@ -319,6 +341,7 @@ export function useStudio(client: ApiClient, trackId: string) {
     recording,
     mixing,
     previewing,
+    trackDeleted,
     hasTake,
     error,
     notice,
@@ -338,5 +361,6 @@ export function useStudio(client: ApiClient, trackId: string) {
     stopRecording,
     previewMix,
     exportMix,
+    deleteTrack,
   };
 }

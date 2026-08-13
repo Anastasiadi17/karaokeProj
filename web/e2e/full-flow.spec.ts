@@ -72,6 +72,21 @@ test("микс можно послушать до скачивания", async (
   await expect(page.getByRole("button", { name: "Скачать микс" })).toBeEnabled();
 });
 
+test("трек можно убрать с сервера, не теряя студию", async ({ page }) => {
+  await page.goto("/");
+
+  await page.setInputFiles('input[type="file"]', "e2e/fixtures/sample.wav");
+  await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
+    timeout: 90_000,
+  });
+
+  await page.getByRole("button", { name: "Удалить трек с сервера" }).click();
+
+  await expect(page.getByText("Трек удалён с сервера")).toBeVisible();
+  // Студия на месте: минусовка уже в памяти вкладки.
+  await expect(page.getByRole("button", { name: "Записать" })).toBeEnabled();
+});
+
 test("понятная ошибка на неподходящем файле", async ({ page }) => {
   await page.goto("/");
 

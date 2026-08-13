@@ -105,6 +105,21 @@ export function StudioScreen({
         />
       </label>
 
+      <p>
+        {s.trackDeleted ? (
+          "Трек удалён с сервера. Минусовка осталась в этой вкладке: допеть и " +
+          "скачать микс можно, но после перезагрузки страницы её придётся " +
+          "загружать заново."
+        ) : (
+          <button
+            disabled={s.recording || s.mixing}
+            onClick={() => void s.deleteTrack()}
+          >
+            Удалить трек с сервера
+          </button>
+        )}
+      </p>
+
       <label>
         Реверб
         <input
