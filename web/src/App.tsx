@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiClient } from "./api/client";
 import type { Me } from "./api/types";
 import { AuthScreen } from "./features/auth/AuthScreen";
+import { PricingScreen } from "./features/pricing/PricingScreen";
 import { UploadScreen } from "./features/upload/UploadScreen";
 import { ProcessingScreen } from "./features/processing/ProcessingScreen";
 import { StudioScreen } from "./features/studio/StudioScreen";
@@ -15,6 +16,7 @@ export default function App() {
   const [jobId, setJobId] = useState<string | null>(null);
 
   const [me, setMe] = useState<Me | null>(null);
+  const [showPricing, setShowPricing] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
 
   const refreshMe = useCallback(async () => {
@@ -30,11 +32,26 @@ export default function App() {
   if (checkingSession) return <p>Минуту…</p>;
   if (me === null) return <AuthScreen client={client} />;
 
+  if (showPricing) {
+    return (
+      <PricingScreen
+        client={client}
+        me={me}
+        onBack={() => {
+          setShowPricing(false);
+          // Тариф мог смениться в другой вкладке, пока человек был у Stripe.
+          void refreshMe();
+        }}
+      />
+    );
+  }
+
   if (stage === "upload") {
     return (
       <UploadScreen
         client={client}
         me={me}
+        onShowPricing={() => setShowPricing(true)}
         onLogout={async () => {
           await client.logout();
           setMe(null);

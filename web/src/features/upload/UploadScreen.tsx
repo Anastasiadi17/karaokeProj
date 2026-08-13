@@ -20,11 +20,13 @@ export function UploadScreen({
   me,
   onUploaded,
   onLogout,
+  onShowPricing,
 }: {
   client: ApiClient;
   me: Me;
   onUploaded: (result: UploadResult) => void;
   onLogout: () => void;
+  onShowPricing: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,45 +52,11 @@ export function UploadScreen({
       <p>
         {me.email} · осталось {Math.max(0, me.operations_limit - me.operations_used)}{" "}
         из {me.operations_limit} треков в этом месяце{" "}
+        <button onClick={onShowPricing}>
+          {me.plan === "pro" ? "Подписка Pro" : "Тарифы"}
+        </button>{" "}
         <button onClick={onLogout}>Выйти</button>
       </p>
-      {me.plan === "pro" && (
-        <p>
-          <button
-            onClick={async () => {
-              try {
-                // Отмена, карта и счета живут у Stripe: своего экрана
-                // управления подпиской нет намеренно.
-                window.location.href = await client.openPortal();
-              } catch {
-                setError("Управление подпиской сейчас недоступно.");
-              }
-            }}
-          >
-            Управлять подпиской
-          </button>
-        </p>
-      )}
-      {me.plan === "free" && (
-        <p>
-          <button
-            onClick={async () => {
-              try {
-                // Уходим на страницу Stripe целиком: собирать форму оплаты
-                // у себя значит попасть в периметр PCI без всякой нужды.
-                window.location.href = await client.startCheckout();
-              } catch {
-                setError(
-                  "Оплата сейчас недоступна. Попробуйте позже — на " +
-                    "бесплатном тарифе всё продолжает работать.",
-                );
-              }
-            }}
-          >
-            Перейти на Pro — без водяного знака
-          </button>
-        </p>
-      )}
       <input
         type="file"
         accept="audio/*"

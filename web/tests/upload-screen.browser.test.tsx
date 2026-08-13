@@ -31,7 +31,7 @@ describe("UploadScreen", () => {
       vi.fn(async () => ({ trackId: "t1", jobId: "j1" })),
     );
 
-    render(<UploadScreen client={client} me={ME} onUploaded={onUploaded} onLogout={vi.fn()} />);
+    render(<UploadScreen client={client} me={ME} onUploaded={onUploaded} onLogout={vi.fn()} onShowPricing={vi.fn()} />);
     const input = await fileInput();
     await userSelects(input, wavFile());
 
@@ -47,7 +47,7 @@ describe("UploadScreen", () => {
       }),
     );
 
-    render(<UploadScreen client={client} me={ME} onUploaded={vi.fn()} onLogout={vi.fn()} />);
+    render(<UploadScreen client={client} me={ME} onUploaded={vi.fn()} onLogout={vi.fn()} onShowPricing={vi.fn()} />);
     const input = await fileInput();
     await userSelects(input, wavFile("song.m4a"));
 
@@ -63,7 +63,7 @@ describe("UploadScreen", () => {
       }),
     );
 
-    render(<UploadScreen client={client} me={ME} onUploaded={vi.fn()} onLogout={vi.fn()} />);
+    render(<UploadScreen client={client} me={ME} onUploaded={vi.fn()} onLogout={vi.fn()} onShowPricing={vi.fn()} />);
     const input = await fileInput();
     await userSelects(input, wavFile());
 
@@ -84,7 +84,7 @@ describe("UploadScreen", () => {
         client={client}
         me={{ ...ME, operations_used: 3 }}
         onUploaded={vi.fn()}
-        onLogout={vi.fn()}
+        onLogout={vi.fn()} onShowPricing={vi.fn()}
       />,
     );
     const input = await fileInput();
@@ -101,7 +101,7 @@ describe("UploadScreen", () => {
         client={fakeClient(vi.fn())}
         me={ME}
         onUploaded={vi.fn()}
-        onLogout={vi.fn()}
+        onLogout={vi.fn()} onShowPricing={vi.fn()}
       />,
     );
 
@@ -120,7 +120,7 @@ describe("UploadScreen", () => {
         client={fakeClient(uploadTrack)}
         me={ME}
         onUploaded={vi.fn()}
-        onLogout={vi.fn()}
+        onLogout={vi.fn()} onShowPricing={vi.fn()}
       />,
     );
     const input = await fileInput();
