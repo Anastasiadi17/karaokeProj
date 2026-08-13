@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..separation.base import StemSeparator
 from ..storage.base import Storage
+from ..track_lock import TrackLock
 from .models import Stage
 from .store import JobStore
 
@@ -40,12 +41,18 @@ class JobRunner:
     """
 
     def __init__(self, store: JobStore, storage: Storage,
-                 separator: StemSeparator, work_dir: Path) -> None:
+                 separator: StemSeparator, work_dir: Path,
+                 track_lock: TrackLock | None = None) -> None:
         self._store = store
         self._storage = storage
         self._separator = separator
         self._work_dir = Path(work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        # Замок необязателен только ради тестов, конструирующих раннер
+        # напрямую. Главный код обязан передавать общий с удалением: иначе у
+        # каждого свой, гонка возвращается, и заметить это нечем. Проводку
+        # закрепляет test_runner_shares_the_track_lock_with_app_state.
+        self._track_lock = track_lock or TrackLock()
         self._stopped = False
         self._warmup_status = WarmupStatus("pending")
         # Взведено, пока рабочий поток ничего не считает. Нужно при

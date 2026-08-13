@@ -3,12 +3,31 @@ from datetime import datetime, timedelta, timezone
 
 from .jobs.store import JobStore
 from .storage.base import Storage
+from .track_lock import TrackLock
 
 log = logging.getLogger(__name__)
 
 
-def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
-                  now: datetime | None = None) -> int:
+def purge_track(store: JobStore, storage: Storage, track_lock: TrackLock,
+                track_id: str, timeout: float | None = None) -> None:
+    """Удалить файлы трека и его строку под замком.
+
+    Под замком — потому что порознь эти два действия переплетаются с
+    воркером, дописывающим стемы: он проверит строку до удаления, а запишет
+    файлы после, и каталог переживёт строку. Подробности — в спеке
+    2026-08-13-delete-race-design.md.
+
+    Порядок обратный созданию: сначала файлы, потом строка. Если удаление
+    файлов сорвалось, строка остаётся намеренно — без неё файлы стали бы
+    сиротами, которых не найдёт ни уборка по TTL, ни повторный DELETE.
+    """
+    with track_lock.hold(timeout):
+        storage.delete_prefix(f"tracks/{track_id}")
+        store.delete_track(track_id)
+
+
+def purge_expired(store: JobStore, storage: Storage, track_lock: TrackLock,
+                  ttl_hours: int, now: datetime | None = None) -> int:
     """Удалить треки старше TTL вместе с файлами. Возвращает число удалённых.
 
     Один неудалимый трек (например, файл занят фоновым процессом на
@@ -22,8 +41,8 @@ def purge_expired(store: JobStore, storage: Storage, ttl_hours: int,
     removed = 0
     for track_id in store.list_expired_tracks(cutoff):
         try:
-            storage.delete_prefix(f"tracks/{track_id}")
-            store.delete_track(track_id)
+            # Без таймаута намеренно: уборка фоновая, спешить ей некуда.
+            purge_track(store, storage, track_lock, track_id)
         except Exception:
             log.exception("не удалось удалить истёкший трек %s", track_id)
             continue

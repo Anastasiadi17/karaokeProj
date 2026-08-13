@@ -8,6 +8,7 @@ from .jobs.store import JobStore
 from .separation.base import StemSeparator
 from .separation.fake import FakeSeparator
 from .storage.local import LocalStorage
+from .track_lock import TrackLock
 
 
 def build_separator(settings: Settings,
@@ -38,6 +39,7 @@ class AppState:
     storage: LocalStorage
     separator: StemSeparator
     runner: JobRunner
+    track_lock: TrackLock
 
     @classmethod
     def build(cls, settings: Settings,
@@ -45,7 +47,9 @@ class AppState:
         store = JobStore(settings.db_path)
         storage = LocalStorage(Path(settings.data_dir) / "files")
         separator = build_separator(settings, gpu)
+        track_lock = TrackLock()
         runner = JobRunner(
-            store, storage, separator, Path(settings.data_dir) / "work"
+            store, storage, separator, Path(settings.data_dir) / "work",
+            track_lock=track_lock,
         )
-        return cls(settings, store, storage, separator, runner)
+        return cls(settings, store, storage, separator, runner, track_lock)

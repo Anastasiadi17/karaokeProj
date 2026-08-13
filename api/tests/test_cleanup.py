@@ -4,11 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from karaoke_api import deps
-from karaoke_api.cleanup import purge_expired, purge_orphan_track_dirs
+from karaoke_api.cleanup import (
+    purge_expired,
+    purge_orphan_track_dirs,
+    purge_track,
+)
 from karaoke_api.config import Settings
+from karaoke_api.deps import AppState
 from karaoke_api.jobs.store import JobStore, new_id
 from karaoke_api.main import create_app
 from karaoke_api.storage.local import LocalStorage
+from karaoke_api.track_lock import TrackLock
 
 
 @pytest.fixture
@@ -24,7 +30,7 @@ def wiring(tmp_path, make_wav):
 
 def test_fresh_track_survives(wiring):
     store, storage, track_id = wiring
-    assert purge_expired(store, storage, ttl_hours=24) == 0
+    assert purge_expired(store, storage, TrackLock(), ttl_hours=24) == 0
     assert store.get_track(track_id) is not None
 
 
@@ -32,7 +38,7 @@ def test_expired_track_is_removed(wiring):
     store, storage, track_id = wiring
     future = datetime.now(timezone.utc) + timedelta(hours=25)
 
-    assert purge_expired(store, storage, ttl_hours=24, now=future) == 1
+    assert purge_expired(store, storage, TrackLock(), ttl_hours=24, now=future) == 1
 
     assert store.get_track(track_id) is None
     assert not storage.exists(f"tracks/{track_id}/original.wav")
@@ -186,7 +192,7 @@ def test_purge_continues_after_one_track_fails(wiring, monkeypatch, make_wav):
     monkeypatch.setattr(storage, "delete_prefix", flaky_delete_prefix)
 
     future = datetime.now(timezone.utc) + timedelta(hours=25)
-    removed = purge_expired(store, storage, ttl_hours=24, now=future)
+    removed = purge_expired(store, storage, TrackLock(), ttl_hours=24, now=future)
 
     assert removed == 1
     # первый трек не удалился ни из хранилища, ни из БД (ошибка была до
@@ -194,3 +200,44 @@ def test_purge_continues_after_one_track_fails(wiring, monkeypatch, make_wav):
     assert store.get_track(track_id) is not None
     assert store.get_track(other_id) is None
     assert not storage.exists(other_key)
+
+
+def test_runner_shares_the_track_lock_with_app_state(tmp_path):
+    """Замок обязан быть общим у раннера и удаления.
+
+    Если раннер заведёт свой, гонка вернётся, а все остальные тесты
+    останутся зелёными — ровно тот способ сломаться молча, ради которого
+    параметр сделан необязательным. Поэтому проводка закреплена отдельно.
+    """
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+    )
+    state = AppState.build(settings)
+    try:
+        assert state.runner._track_lock is state.track_lock
+    finally:
+        state.store.close()
+
+
+def test_delete_answers_503_when_the_lock_is_busy(tmp_path, make_wav):
+    """Пока кто-то держит замок, DELETE не висит вечно, а отвечает уже
+    существующим кодом. Новых кодов в контракте не появляется."""
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "db.sqlite",
+        separator="fake",
+        track_lock_timeout_sec=0.05,
+    )
+    with TestClient(create_app(settings)) as client:
+        with open(make_wav(duration_sec=0.5), "rb") as fh:
+            ids = client.post(
+                "/api/tracks", files={"file": ("s.wav", fh, "audio/wav")}
+            ).json()
+        state = client.app.state.karaoke
+        with state.track_lock.hold():
+            response = client.delete(f"/api/tracks/{ids['track_id']}")
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "delete_failed"}

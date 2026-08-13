@@ -9,12 +9,13 @@ from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .audio.probe import UnsupportedAudio, normalize_format, probe_audio
-from .cleanup import purge_expired, purge_orphan_track_dirs
+from .cleanup import purge_expired, purge_orphan_track_dirs, purge_track
 from .config import Settings, get_settings
 from .deps import AppState
 from .gpu import check_gpu
 from .jobs.store import new_id
 from .ranges import parse_range
+from .track_lock import TrackLockBusy
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +98,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if orphans:
             log.warning("помечено упавшими незавершённых задач: %d", orphans)
 
-        purge_expired(state.store, state.storage, settings.file_ttl_hours)
+        purge_expired(state.store, state.storage, state.track_lock,
+                      settings.file_ttl_hours)
         purge_orphan_track_dirs(state.store, state.storage)
 
         async def _cleanup_loop() -> None:
@@ -106,7 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     await asyncio.to_thread(
                         purge_expired, state.store, state.storage,
-                        settings.file_ttl_hours,
+                        state.track_lock, settings.file_ttl_hours,
                     )
                 except Exception:
                     log.exception("сбой автоочистки")
@@ -253,16 +255,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if state.store.get_track(track_id) is None:
             return _error("not_found", status=404)
         try:
-            state.storage.delete_prefix(f"tracks/{track_id}")
+            # Целиком в отдельный поток: ожидание замка не должно вставать
+            # поперёк событийного цикла.
+            await asyncio.to_thread(
+                purge_track, state.store, state.storage, state.track_lock,
+                track_id, state.settings.track_lock_timeout_sec,
+            )
+        except TrackLockBusy:
+            log.warning("удаление трека %s не дождалось замка за %s с",
+                        track_id, state.settings.track_lock_timeout_sec)
+            return _error("delete_failed", status=503)
         except Exception:
             # На Windows файл, занятый работающей задачей, не удаляется
             # (WinError 32) — штатный сценарий, а не сбой сервиса, и отвечать
             # на него голым 500 без кода нечестно. Та же защита, что в цикле
-            # автоочистки. Строку трека оставляем намеренно: без неё файлы
-            # стали бы сиротами, а так их подберёт уборка по TTL.
+            # автоочистки. Строку трека purge_track в этом случае оставляет
+            # намеренно: без неё файлы стали бы сиротами, а так их подберёт
+            # уборка по TTL.
             log.exception("не удалось удалить файлы трека %s", track_id)
             return _error("delete_failed", status=503)
-        state.store.delete_track(track_id)
         return Response(status_code=204)
 
     @app.get("/api/health")
