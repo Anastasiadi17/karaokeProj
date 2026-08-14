@@ -17,6 +17,7 @@ from .config import Settings, get_settings
 from .deps import AppState
 from .gpu import check_gpu
 from .jobs.store import new_id
+from .logging_setup import configure_logging
 from .ranges import parse_range
 from .track_lock import TrackLockBusy
 
@@ -79,6 +80,7 @@ class RejectOversizedBody:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging(settings.log_json, settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
