@@ -212,6 +212,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Операция засчитывается последней: отказ по формату, длине или
         # размеру не должен съедать одну из трёх бесплатных.
         state.accounts.record_operation(user.id, "separate", track_id)
+        state.accounts.record_event("track_uploaded", user.id)
         return {"track_id": track_id, "job_id": job_id}
 
     def _owns(request: Request, track_id: str) -> bool:

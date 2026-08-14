@@ -109,6 +109,20 @@ export class ApiClient {
     return body.url;
   }
 
+  /**
+   * Отмечает шаг воронки, который виден только браузеру.
+   *
+   * Молча глотает отказ: метрика не имеет права мешать человеку доделать то,
+   * ради чего он пришёл.
+   */
+  async trackEvent(name: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/api/events/${name}`, { method: "POST" });
+    } catch {
+      // Не дошло — не беда: воронка потеряет точку, человек не потеряет ничего.
+    }
+  }
+
   async logout(): Promise<void> {
     await fetch(`${this.baseUrl}/api/auth/logout`, { method: "POST" });
   }

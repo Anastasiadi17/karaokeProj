@@ -244,8 +244,9 @@ export function useStudio(
     // записи сообщением, которое он не может исполнить.
     if (take && take[0].length > 0 && ctxRef.current) {
       void saveTake(trackId, take, ctxRef.current.sampleRate);
+      void client.trackEvent("take_recorded");
     }
-  }, [trackId]);
+  }, [trackId, client]);
 
   const startRecording = useCallback(async () => {
     const ctx = ctxRef.current;
@@ -440,6 +441,8 @@ export function useStudio(
         Float32Array.from(mixed.getChannelData(ch)),
       );
       downloadBlob(encodeWav(channels, mixed.sampleRate), "karaoke-mix.wav");
+      // Последний и самый важный шаг воронки: человек дошёл до результата.
+      void client.trackEvent("mix_exported");
     } catch {
       // Молчащая кнопка хуже ошибки: человек жмёт её снова и снова.
       setNotice(
@@ -449,7 +452,7 @@ export function useStudio(
     } finally {
       setMixing(false);
     }
-  }, [buildMix]);
+  }, [buildMix, client]);
 
   // Уровень читается только во время записи: клиппинг надо показать сразу,
   // а не после сведения, когда дубль уже испорчен.

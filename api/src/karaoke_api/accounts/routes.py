@@ -75,6 +75,7 @@ def build_router(settings: Settings) -> APIRouter:
             return _error("too_many_requests", status=429)
 
         accounts = request.app.state.karaoke.accounts
+        accounts.record_event("auth_link_requested")
         raw = accounts.create_login_token(email)
         link = f"{settings.public_base_url}/api/auth/callback?token={raw}"
         send_login_link(settings, email, link)
@@ -95,6 +96,7 @@ def build_router(settings: Settings) -> APIRouter:
         if user is None:
             return _error("invalid_token")
 
+        accounts.record_event("signed_in", user.id)
         session = accounts.create_session(user.id)
         response = RedirectResponse("/", status_code=302)
         response.set_cookie(
@@ -182,6 +184,35 @@ def build_router(settings: Settings) -> APIRouter:
         response = Response(status_code=204)
         response.delete_cookie(SESSION_COOKIE)
         return response
+
+    # Список закрытый: события шлёт браузер, и без списка туда приедет что
+    # угодно, а воронка станет мусором.
+    _CLIENT_EVENTS = {"mix_exported", "take_recorded"}
+
+    @router.post("/api/events/{name}", status_code=204)
+    async def record_client_event(request: Request, name: str):
+        """События, которые видит только браузер: запись и экспорт.
+
+        Сведение идёт на клиенте, и сервер иначе не узнает, дошёл ли человек
+        до результата, — а это последний и самый важный шаг воронки.
+        """
+        if name not in _CLIENT_EVENTS:
+            return _error("unknown_event")
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+
+        request.app.state.karaoke.accounts.record_event(name, user.id)
+        return Response(status_code=204)
+
+    @router.get("/api/funnel")
+    async def funnel(request: Request):
+        if not settings.metrics_token:
+            return _error("metrics_not_configured", status=503)
+        if request.headers.get("x-metrics-token") != settings.metrics_token:
+            return _error("unauthorized", status=401)
+
+        return request.app.state.karaoke.accounts.funnel()
 
     @router.post("/api/credits/spend")
     async def spend_credits(request: Request):

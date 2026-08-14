@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
 CREATE INDEX IF NOT EXISTS idx_credit_ledger_user
     ON credit_ledger(user_id);
 
+CREATE TABLE IF NOT EXISTS events (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    user_id    TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at);
+
 CREATE TABLE IF NOT EXISTS webhook_events (
     stripe_event_id TEXT PRIMARY KEY,
     received_at     TEXT NOT NULL
@@ -344,6 +353,42 @@ class AccountStore:
             return None
         return User(id=row["id"], email=row["email"],
                     created_at=_parse_dt(row["created_at"]))
+
+    # --- воронка -----------------------------------------------------
+    #
+    # Считаются не действия, а люди, дошедшие до шага: конверсия — это доля
+    # людей, а не доля нажатий. Поэтому в отчёте COUNT(DISTINCT user_id), а
+    # события пишутся как есть, без дедупликации на записи.
+    #
+    # `user_id` без внешнего ключа намеренно: событие «попросил ссылку»
+    # случается до появления пользователя, а событие удалённого аккаунта не
+    # должно исчезать из истории — иначе вчерашняя воронка меняется задним
+    # числом при каждом удалении.
+
+    def record_event(self, name: str, user_id: str | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO events (id, name, user_id, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (uuid.uuid4().hex, name, user_id, _now().isoformat()),
+            )
+            self._conn.commit()
+
+    def funnel(self, since: datetime | None = None) -> dict[str, int]:
+        """Сколько РАЗНЫХ людей дошло до каждого шага."""
+        query = (
+            "SELECT name, COUNT(DISTINCT COALESCE(user_id, id)) AS n"
+            " FROM events"
+        )
+        params: tuple = ()
+        if since is not None:
+            query += " WHERE created_at >= ?"
+            params = (since.isoformat(),)
+        query += " GROUP BY name"
+
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return {row["name"]: int(row["n"]) for row in rows}
 
     # --- кредиты ---------------------------------------------------
     #
