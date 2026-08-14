@@ -24,6 +24,57 @@ export const MAX_SEMITONES = 7;
 const GRAIN = 2048;
 const OVERLAP = GRAIN / 2;
 
+/**
+ * Насколько зерну позволено съехать от расчётного места, чтобы попасть в
+ * фазу предыдущего. ±512 сэмплов — это период голоса от 86 Гц и выше, то
+ * есть весь человеческий диапазон, включая низкий мужской.
+ */
+const SEARCH = 512;
+/** Шаг перебора и длина сравнения: точность против времени счёта. */
+const SEARCH_STEP = 8;
+const CORRELATION = 256;
+
+/**
+ * Ищет, откуда взять зерно, чтобы оно продолжило уже написанное.
+ *
+ * Без этого зёрна кладутся вслепую, стыки рвут фазу, и накопленный разрыв
+ * уводит высоту: замер на синусе 200 Гц давал терцию мимо на 15 центов, а
+ * квинту вниз — на 113, то есть больше полутона. Одновременно с голосом это
+ * слышно не как неточность, а как фальшь.
+ */
+function alignedStart(
+  input: Samples,
+  out: Samples,
+  outPos: number,
+  guess: number,
+): number {
+  const lo = Math.max(0, guess - SEARCH);
+  const hi = Math.min(input.length - CORRELATION - 1, guess + SEARCH);
+  if (hi <= lo || outPos + CORRELATION >= out.length) return guess;
+
+  let bestStart = guess;
+  let bestScore = -Infinity;
+
+  for (let candidate = lo; candidate <= hi; candidate += SEARCH_STEP) {
+    let dot = 0;
+    let energy = 0;
+    for (let i = 0; i < CORRELATION; i += 1) {
+      const value = input[candidate + i];
+      dot += value * out[outPos + i];
+      energy += value * value;
+    }
+    // Нормировка на энергию кандидата: иначе перебор всегда выбирает самое
+    // громкое место, а не самое похожее.
+    const score = energy > 0 ? dot / Math.sqrt(energy) : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = candidate;
+    }
+  }
+
+  return bestStart;
+}
+
 function ratioOf(semitones: number): number {
   const clamped = Math.max(MIN_SEMITONES, Math.min(MAX_SEMITONES, semitones));
   return Math.pow(2, clamped / 12);
@@ -44,7 +95,11 @@ export function timeStretch(input: Samples, factor: number): Samples {
   const inStep = step / factor;
 
   for (let out_i = 0, in_pos = 0; out_i < outLength; out_i += step) {
-    const start = Math.round(in_pos);
+    // Расчётное место остаётся расчётным: оно задаёт скорость растяжения.
+    // Подвинуть разрешено только само зерно, и только чтобы попасть в фазу.
+    const start = out_i === 0
+      ? Math.round(in_pos)
+      : alignedStart(input, out, out_i, Math.round(in_pos));
     for (let i = 0; i < GRAIN; i += 1) {
       const from = start + i;
       const to = out_i + i;

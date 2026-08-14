@@ -27,6 +27,36 @@ function frequencyOf(data: Float32Array): number {
   return (crossings * SR) / data.length;
 }
 
+/**
+ * Частота по наилучшему совпадению с чистым тоном.
+ *
+ * Переходов через ноль здесь мало: они врут на долю процента, а слышно уже
+ * десяток центов — то есть ими фальшь как раз и не поймать.
+ */
+function dominantFrequency(data: Float32Array, lo: number, hi: number): number {
+  const from = Math.round(SR * 0.05);
+  const to = data.length - Math.round(SR * 0.05);
+  let best = { freq: lo, tone: -1 };
+
+  for (let freq = lo; freq <= hi; freq += 0.05) {
+    let re = 0;
+    let im = 0;
+    for (let i = from; i < to; i += 1) {
+      const angle = (2 * Math.PI * freq * i) / SR;
+      re += data[i] * Math.cos(angle);
+      im += data[i] * Math.sin(angle);
+    }
+    const tone = re * re + im * im;
+    if (tone > best.tone) best = { freq, tone };
+  }
+
+  return best.freq;
+}
+
+function centsOff(actual: number, target: number): number {
+  return Math.abs(1200 * Math.log2(actual / target));
+}
+
 describe("timeStretch", () => {
   it("удлиняет сигнал в заданное число раз", () => {
     expect(timeStretch(sine(440, 0.2), 2).length).toBeCloseTo(
@@ -54,6 +84,26 @@ describe("pitchShift", () => {
     const source = sine(440);
     expect(pitchShift(source, 4).length).toBe(source.length);
     expect(pitchShift(source, -5).length).toBe(source.length);
+  });
+
+  it("КЛЮЧЕВОЙ: попадает в ноту, а не рядом", () => {
+    // Подпевка звучит одновременно с голосом, поэтому мимо ноты она не
+    // «неточная», а фальшивая: две копии, разошедшиеся на десяток центов,
+    // бьются с оригиналом, и это слышно как кваканье, а не как хор.
+    // Пять центов — порог, ниже которого расхождение не различает никто.
+    const target = 200 * Math.pow(2, 4 / 12);
+    const shifted = pitchShift(sine(200), 4);
+
+    expect(centsOff(dominantFrequency(shifted, 240, 265), target))
+      .toBeLessThan(5);
+  });
+
+  it("КЛЮЧЕВОЙ: попадает в ноту и на квинте вниз", () => {
+    const target = 200 * Math.pow(2, -7 / 12);
+    const shifted = pitchShift(sine(200), -7);
+
+    expect(centsOff(dominantFrequency(shifted, 125, 145), target))
+      .toBeLessThan(5);
   });
 
   it("поднимает высоту на терцию", () => {
