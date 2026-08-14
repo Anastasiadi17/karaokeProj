@@ -104,6 +104,16 @@ export function StudioScreen({
         />
       </label>
 
+      <p>
+        <button
+          disabled={s.recording || s.calibrating}
+          onClick={() => void s.calibrate()}
+        >
+          {s.calibrating ? "Слушаю щелчок…" : "Измерить задержку"}
+        </button>{" "}
+        Понадобятся динамики: в наушниках микрофон щелчка не услышит.
+      </p>
+
       <label>
         Голос
         <input

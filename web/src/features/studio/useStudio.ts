@@ -10,6 +10,7 @@ import {
   saveOffset,
 } from "../../audio/latency";
 import { LevelMeter } from "../../audio/meter";
+import { measureOffset } from "../../audio/calibrate";
 import { makeHarmony } from "../../audio/harmonizer";
 import { master } from "../../audio/mastering";
 import { mixdown } from "../../audio/mixdown";
@@ -66,6 +67,7 @@ export function useStudio(
   const [musicGain, setMusicGain] = useState(0.8);
   const [reverbWet, setReverbWetState] = useState(0.25);
   const [harmonyGain, setHarmonyGain] = useState(0);
+  const [calibrating, setCalibrating] = useState(false);
   const [monitorOn, setMonitorOnState] = useState(false);
 
   useEffect(() => {
@@ -145,6 +147,58 @@ export function useStudio(
     monitorRef.current?.setEnabled(on);
     setMonitorOnState(on);
   }, []);
+
+  /**
+   * Меряет смещение щелчком через динамики.
+   *
+   * Работает только на динамиках: в наушниках микрофон щелчка не слышит, и
+   * тогда честнее сказать «не получилось», чем поставить случайное число.
+   * Поэтому это помощник, а не замена ползунку.
+   */
+  const calibrate = useCallback(async () => {
+    const ctx = ctxRef.current;
+    const recorder = recorderRef.current;
+    if (!ctx || !recorder || recorder.isRecording) return;
+
+    setCalibrating(true);
+    setNotice(null);
+    let stream: MediaStream | null = null;
+    try {
+      if (ctx.state !== "running") await ctx.resume();
+      stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      await recorder.start(stream);
+
+      // Щелчок издаётся не сразу: первым кадрам записи верить нельзя, пока
+      // граф раскручивается.
+      const lead = Math.round(ctx.sampleRate * 0.2);
+      const click = ctx.createBuffer(1, 64, ctx.sampleRate);
+      const data = click.getChannelData(0);
+      for (let i = 0; i < data.length; i += 1) data[i] = 1 - i / data.length;
+      const source = ctx.createBufferSource();
+      source.buffer = click;
+      source.connect(ctx.destination);
+      source.start(ctx.currentTime + 0.2);
+
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const [recorded] = recorder.stop();
+      const result = measureOffset(recorded, lead, ctx.sampleRate);
+
+      if (result === null || result.confidence < 3) {
+        setNotice(
+          "Щелчок не вернулся. Калибровка работает только через динамики: " +
+            "в наушниках микрофон его не слышит. Смещение осталось прежним.",
+        );
+        return;
+      }
+
+      setOffsetSec(clampOffset(result.offsetSec));
+    } catch {
+      setNotice("Не удалось измерить задержку. Смещение осталось прежним.");
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+      setCalibrating(false);
+    }
+  }, [setOffsetSec]);
 
   const stopPreview = useCallback(() => {
     previewRef.current?.stop();
@@ -409,6 +463,8 @@ export function useStudio(
     clipped,
     offsetSec,
     setOffsetSec,
+    calibrate,
+    calibrating,
     voiceGain,
     setVoiceGain,
     musicGain,
