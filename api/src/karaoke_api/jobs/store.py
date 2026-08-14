@@ -113,6 +113,13 @@ class JobStore:
             user_id=row["user_id"],
         )
 
+    def list_tracks_of(self, user_id: str) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM tracks WHERE user_id = ?", (user_id,)
+            ).fetchall()
+        return [r["id"] for r in rows]
+
     def list_expired_tracks(self, cutoff: datetime) -> list[str]:
         with self._lock:
             rows = self._conn.execute(

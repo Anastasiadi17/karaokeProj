@@ -182,6 +182,14 @@ class AccountStore:
         return User(id=row["id"], email=row["email"],
                     created_at=_parse_dt(row["created_at"]))
 
+    def delete_user(self, user_id: str) -> None:
+        """Сессии, операции, кредиты и подписка уходят каскадом по внешним
+        ключам; строка подписки в Stripe при этом остаётся — отменить её
+        может только сам Stripe, и это отдельный разговор с провайдером."""
+        with self._lock:
+            self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            self._conn.commit()
+
     # --- одноразовые ссылки --------------------------------------------
 
     def create_login_token(self, email: str,

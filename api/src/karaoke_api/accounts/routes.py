@@ -14,10 +14,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from ..cleanup import purge_track
 from ..config import Settings
 from . import billing
 from .billing import BadSignature, StripeError, apply_event, verify_signature
 from .mail import send_login_link
+from .ratelimit import RateLimiter
 from .store import User, normalize_email
 
 log = logging.getLogger(__name__)
@@ -53,12 +55,24 @@ def current_user(request: Request) -> User | None:
 def build_router(settings: Settings) -> APIRouter:
     router = APIRouter()
 
+    by_email = RateLimiter(settings.login_requests_per_email_hour, 3600)
+    by_ip = RateLimiter(settings.login_requests_per_ip_hour, 3600)
+
     @router.post("/api/auth/request")
     async def request_link(request: Request):
         body = await request.json()
         email = normalize_email(str(body.get("email", "")))
         if not _EMAIL.match(email):
             return _error("invalid_email")
+
+        # Ключ по адресу защищает чужой ящик, ключ по источнику — нашу
+        # репутацию отправителя. Проверяются оба: обойти можно только оба
+        # сразу.
+        client_ip = request.client.host if request.client else "unknown"
+        if not by_email.allow(email) or not by_ip.allow(client_ip):
+            log.warning("превышена частота запросов ссылки: %s / %s",
+                        email, client_ip)
+            return _error("too_many_requests", status=429)
 
         accounts = request.app.state.karaoke.accounts
         raw = accounts.create_login_token(email)
@@ -137,6 +151,37 @@ def build_router(settings: Settings) -> APIRouter:
     # иначе клиент сам придумывает reason, и журнал перестаёт быть ответом на
     # вопрос «куда делись кредиты».
     _SPENDABLE = {"mastering": 1}
+
+    @router.delete("/api/me", status_code=204)
+    async def delete_account(request: Request):
+        """Удаляет аккаунт со всем, что к нему привязано.
+
+        Право человека и требование ЕС, но здесь важнее простое: пока такой
+        кнопки нет, единственный способ уйти — написать письмо, а его никто
+        не читает. Треки и файлы сносятся тем же путём, что и вручную, чтобы
+        не завести второй способ удаления, который разойдётся с первым.
+        """
+        user = current_user(request)
+        if user is None:
+            return _error("unauthorized", status=401)
+
+        state = request.app.state.karaoke
+        for track_id in state.store.list_tracks_of(user.id):
+            try:
+                await asyncio.to_thread(
+                    purge_track, state.store, state.storage, state.track_lock,
+                    track_id, settings.track_lock_timeout_sec,
+                )
+            except Exception:
+                # Файл заперт антивирусом — аккаунт всё равно должен уйти:
+                # остаток подберёт уборка по сроку хранения.
+                log.exception("не удалось снести трек %s при удалении аккаунта",
+                              track_id)
+
+        state.accounts.delete_user(user.id)
+        response = Response(status_code=204)
+        response.delete_cookie(SESSION_COOKIE)
+        return response
 
     @router.post("/api/credits/spend")
     async def spend_credits(request: Request):
