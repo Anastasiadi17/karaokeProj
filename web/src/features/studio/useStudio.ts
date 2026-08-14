@@ -19,6 +19,7 @@ import { playBuffer } from "../../audio/playback";
 import type { Playback } from "../../audio/playback";
 import { MIC_CONSTRAINTS, Recorder } from "../../audio/recorder";
 import type { Samples } from "../../audio/samples";
+import { clearTake, loadTake, saveTake } from "../../audio/takeStore";
 
 /**
  * @param plan Тариф из сессии. От него зависит водяной знак в экспорте.
@@ -68,6 +69,7 @@ export function useStudio(
   const [reverbWet, setReverbWetState] = useState(0.25);
   const [harmonyGain, setHarmonyGain] = useState(0);
   const [calibrating, setCalibrating] = useState(false);
+  const [takeRestored, setTakeRestored] = useState(false);
   const [monitorOn, setMonitorOnState] = useState(false);
 
   useEffect(() => {
@@ -107,6 +109,16 @@ export function useStudio(
       } else {
         setOffsetSecState(clampOffset(estimateLatencySec(ctx)));
       }
+      // Дубль, переживший перезагрузку. Восстанавливается молча, но факт
+      // сообщается: человек должен понимать, откуда взялась запись, которую
+      // он в этой вкладке не делал.
+      const storedTake = await loadTake(trackId);
+      if (storedTake && !cancelled) {
+        takeRef.current = storedTake.channels;
+        setHasTake(storedTake.channels[0].length > 0);
+        setTakeRestored(true);
+      }
+
       setReady(true);
     })().catch((exc: unknown) => {
       if (cancelled) return;
@@ -223,8 +235,17 @@ export function useStudio(
     streamRef.current = null;
 
     setRecording(false);
-    setHasTake((takeRef.current?.[0].length ?? 0) > 0);
-  }, []);
+    const take = takeRef.current;
+    setHasTake((take?.[0].length ?? 0) > 0);
+    setTakeRestored(false);
+
+    // Сохранение не ждём и его отказ не показываем: дубль в памяти цел, а
+    // приватный режим и кончившееся место — не повод портить человеку конец
+    // записи сообщением, которое он не может исполнить.
+    if (take && take[0].length > 0 && ctxRef.current) {
+      void saveTake(trackId, take, ctxRef.current.sampleRate);
+    }
+  }, [trackId]);
 
   const startRecording = useCallback(async () => {
     const ctx = ctxRef.current;
@@ -393,6 +414,8 @@ export function useStudio(
     setNotice(null);
     try {
       await client.deleteTrack(trackId);
+      // Трека нет — хранить его дубль незачем и неприлично.
+      void clearTake(trackId);
       setTrackDeleted(true);
     } catch {
       setNotice(
@@ -453,6 +476,7 @@ export function useStudio(
     recording,
     mixing,
     previewing,
+    takeRestored,
     mastering,
     enableMastering,
     trackDeleted,
