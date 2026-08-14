@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .accounts.routes import build_router as build_accounts_router
-from .accounts.routes import current_user, month_start
+from .accounts.routes import current_user, month_start, monthly_operations
 from .audio.probe import UnsupportedAudio, normalize_format, probe_audio
 from .cleanup import purge_expired, purge_orphan_track_dirs, purge_track
 from .config import Settings, get_settings
@@ -167,7 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _error("unauthorized", status=401)
 
         used = state.accounts.count_operations(user.id, month_start())
-        if used >= limits.free_monthly_operations:
+        if used >= monthly_operations(limits, state.accounts.plan_for(user.id)):
             return _error("quota_exceeded", status=429)
 
         with tempfile.TemporaryDirectory() as tmp:

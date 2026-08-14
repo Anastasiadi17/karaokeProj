@@ -45,6 +45,16 @@ def month_start(now: datetime | None = None) -> datetime:
     return moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+def monthly_operations(settings, plan: str) -> int:
+    """Потолок операций месяца для тарифа.
+
+    Одним местом на загрузку и на `/api/me`: если лимит и его показ разойдутся,
+    человек упрётся в отказ, которого не ждал по цифре на экране.
+    """
+    return (settings.pro_monthly_operations if plan == "pro"
+            else settings.free_monthly_operations)
+
+
 def current_user(request: Request) -> User | None:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -324,11 +334,12 @@ def build_router(settings: Settings) -> APIRouter:
 
         accounts = request.app.state.karaoke.accounts
         used = accounts.count_operations(user.id, month_start())
+        plan = accounts.plan_for(user.id)
         return {
             "email": user.email,
-            "plan": accounts.plan_for(user.id),
+            "plan": plan,
             "operations_used": used,
-            "operations_limit": settings.free_monthly_operations,
+            "operations_limit": monthly_operations(settings, plan),
             # Тратить кредиты пока не на что: первой AI-функции нет. Поле
             # существует, чтобы баланс купленного пакета был виден сразу,
             # а не появился вместе с функцией.

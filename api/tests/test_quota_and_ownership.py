@@ -83,6 +83,36 @@ def test_me_shows_the_remaining_quota(client, make_wav):
     assert body["operations_limit"] == 3
 
 
+def _make_pro(client, email="test@example.com"):
+    """Подписка ставится напрямую: путь от вебхука проверяет test_billing."""
+    accounts = client.app.state.karaoke.accounts
+    user = accounts.upsert_user(email)
+    accounts.set_subscription(user.id, "pro", "active", None, "sub_1", "cus_1")
+
+
+def test_pro_is_not_cut_off_at_the_free_limit(client, make_wav):
+    """Лимит Free не имеет отношения к тому, кто заплатил.
+
+    Fair-use у Pro — 100 операций (4.1), и до него счёт бесплатного тарифа
+    не должен доезжать вовсе.
+    """
+    login(client)
+    _make_pro(client)
+    wav = make_wav(duration_sec=1.0)
+
+    for _ in range(3):
+        assert _upload(client, wav).status_code == 201
+
+    assert _upload(client, wav).status_code == 201
+
+
+def test_me_shows_the_pro_limit_to_the_subscriber(client):
+    login(client)
+    _make_pro(client)
+
+    assert client.get("/api/me").json()["operations_limit"] == 100
+
+
 # --- владелец ----------------------------------------------------------
 
 
