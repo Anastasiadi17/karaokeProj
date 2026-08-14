@@ -205,3 +205,54 @@ describe("водяной знак и тариф", () => {
     expect(peak).toBe(0);
   });
 });
+
+describe("подпевка", () => {
+  it("на нуле громкости её нет вовсе", async () => {
+    const music = clickBuffer(1.0, 2);
+    const voice = clickChannels(1.0, 2);
+    const harmony = clickChannels(1.5, 2);
+
+    const mixed = await mixdown(
+      music, voice, SR,
+      { ...BASE, musicGain: 0, harmonyGain: 0 },
+      harmony,
+    );
+
+    // Щелчок подпевки на 1,5 с не должен появиться в миксе.
+    expect(Math.abs(mixed.getChannelData(0)[Math.round(SR * 1.5)])).toBe(0);
+  });
+
+  it("на ненулевой громкости слышна", async () => {
+    const music = clickBuffer(1.0, 2);
+    const voice = clickChannels(1.0, 2);
+    const harmony = clickChannels(1.5, 2);
+
+    const mixed = await mixdown(
+      music, voice, SR,
+      { ...BASE, musicGain: 0, harmonyGain: 0.5 },
+      harmony,
+    );
+
+    expect(
+      Math.abs(mixed.getChannelData(0)[Math.round(SR * 1.5)]),
+    ).toBeCloseTo(0.5, 1);
+  });
+
+  it("сдвигается вместе с голосом, а не отдельно", async () => {
+    // Подпевка выведена из дубля: компенсация задержки обязана двигать её
+    // ровно так же, иначе она разъедется с голосом.
+    const LATENCY = 0.12;
+    const music = clickBuffer(1.0, 3);
+    const voice = clickChannels(1.0 + LATENCY, 3);
+    const harmony = clickChannels(1.0 + LATENCY, 3);
+
+    const mixed = await mixdown(
+      music, voice, SR,
+      { ...BASE, musicGain: 0, voiceGain: 0, harmonyGain: 1,
+        offsetSec: LATENCY },
+      harmony,
+    );
+
+    expect(Math.abs(peakIndex(mixed.getChannelData(0)) - SR)).toBeLessThan(5);
+  });
+});

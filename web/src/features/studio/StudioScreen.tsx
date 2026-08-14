@@ -144,6 +144,20 @@ export function StudioScreen({
       </p>
 
       <label>
+        {/* Подпевка — те же копии голоса, сдвинутые по высоте; на нуле её
+            нет вовсе и считать её не нужно. */}
+        Подпевка
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={s.harmonyGain}
+          onChange={(e) => s.setHarmonyGain(Number(e.target.value))}
+        />
+      </label>
+
+      <label>
         Реверб
         <input
           type="range"

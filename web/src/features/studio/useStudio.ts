@@ -10,6 +10,7 @@ import {
   saveOffset,
 } from "../../audio/latency";
 import { LevelMeter } from "../../audio/meter";
+import { makeHarmony } from "../../audio/harmonizer";
 import { master } from "../../audio/mastering";
 import { mixdown } from "../../audio/mixdown";
 import { Monitor } from "../../audio/monitor";
@@ -38,6 +39,7 @@ export function useStudio(
   const playbackRef = useRef<AudioBufferSourceNode | null>(null);
   const takeRef = useRef<Samples[] | null>(null);
   const previewRef = useRef<Playback | null>(null);
+  const harmonyRef = useRef<Samples[] | null>(null);
   // Смещение, выставленное человеком или взятое из хранилища, оценка контекста
   // перебивать не имеет права.
   const offsetIsSetRef = useRef(false);
@@ -63,6 +65,7 @@ export function useStudio(
   const [voiceGain, setVoiceGain] = useState(1);
   const [musicGain, setMusicGain] = useState(0.8);
   const [reverbWet, setReverbWetState] = useState(0.25);
+  const [harmonyGain, setHarmonyGain] = useState(0);
   const [monitorOn, setMonitorOnState] = useState(false);
 
   useEffect(() => {
@@ -158,6 +161,8 @@ export function useStudio(
     playbackRef.current = null;
 
     takeRef.current = recorderRef.current?.stop() ?? null;
+    // Подпевка считается из дубля, значит от прошлого дубля она не годится.
+    harmonyRef.current = null;
     monitorRef.current?.detach();
     meterRef.current?.detach();
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -238,19 +243,34 @@ export function useStudio(
     const take = takeRef.current;
     if (!music || !take) return null;
 
-    const mixed = await mixdown(music, take, music.sampleRate, {
-      offsetSec,
-      voiceGain,
-      musicGain,
-      reverbWet,
-      watermark: plan !== "pro",
-    });
+    if (harmonyGain > 0 && harmonyRef.current === null) {
+      // Считается один раз на дубль: сдвиг по высоте — самая тяжёлая
+      // арифметика во всём сведении, и повторять её на каждый ползунок
+      // громкости незачем.
+      harmonyRef.current = take.map((channel) => makeHarmony(channel));
+    }
+
+    const mixed = await mixdown(
+      music,
+      take,
+      music.sampleRate,
+      {
+        offsetSec,
+        voiceGain,
+        musicGain,
+        reverbWet,
+        harmonyGain,
+        watermark: plan !== "pro",
+      },
+      harmonyRef.current,
+    );
 
     // Мастеринг включён — значит он в каждом последующем сведении: и в том,
     // что человек слушает, и в том, что скачивает. Иначе прослушивание
     // врало бы ровно там, где за него заплатили.
     return mastering ? master(mixed) : mixed;
-  }, [offsetSec, voiceGain, musicGain, reverbWet, plan, mastering]);
+  }, [offsetSec, voiceGain, musicGain, reverbWet, harmonyGain, plan,
+      mastering]);
 
   /**
    * Включает мастеринг, списав кредит.
@@ -395,6 +415,8 @@ export function useStudio(
     setMusicGain,
     reverbWet,
     setReverbWet,
+    harmonyGain,
+    setHarmonyGain,
     monitorOn,
     setMonitorOn,
     startRecording,

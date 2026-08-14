@@ -10,6 +10,8 @@ export interface MixOptions {
   musicGain: number;
   /** Доля обработанного сигнала, 0..1. */
   reverbWet: number;
+  /** Громкость подпевки, 0 — её нет вовсе. */
+  harmonyGain?: number;
   watermark: boolean;
 }
 
@@ -17,6 +19,14 @@ export function bufferToChannels(buffer: AudioBuffer): Samples[] {
   return Array.from({ length: buffer.numberOfChannels }, (_, ch) =>
     Float32Array.from(buffer.getChannelData(ch)),
   );
+}
+
+/** Подгоняет буфер под длину микса: лишнее режет, недостающее добивает тишиной. */
+function fitToFrames(channel: Samples, frames: number): Samples {
+  if (channel.length === frames) return channel;
+  const fitted = new Float32Array(frames);
+  fitted.set(channel.subarray(0, Math.min(frames, channel.length)));
+  return fitted;
 }
 
 function toStereo(channels: Samples[]): Samples[] {
@@ -29,6 +39,7 @@ export async function mixdown(
   voice: Samples[],
   sampleRate: number,
   options: MixOptions,
+  harmony: Samples[] | null = null,
 ): Promise<AudioBuffer> {
   const frames = music.length;
   const ctx = new OfflineAudioContext(2, frames, sampleRate);
@@ -46,13 +57,9 @@ export async function mixdown(
 
   // --- голос со сдвигом ---
   const offsetSamples = secToSamples(options.offsetSec, sampleRate);
-  const shifted = toStereo(voice).map((channel) => {
-    const aligned = shiftSamples(channel, offsetSamples);
-    if (aligned.length === frames) return aligned;
-    const fitted = new Float32Array(frames);
-    fitted.set(aligned.subarray(0, Math.min(frames, aligned.length)));
-    return fitted;
-  });
+  const shifted = toStereo(voice).map((channel) =>
+    fitToFrames(shiftSamples(channel, offsetSamples), frames),
+  );
 
   const voiceBuffer = ctx.createBuffer(2, frames, sampleRate);
   voiceBuffer.copyToChannel(shifted[0], 0);
@@ -76,6 +83,27 @@ export async function mixdown(
   }
 
   voiceSource.start();
+
+  // Подпевка выводится из того же дубля, поэтому и сдвигается так же: иначе
+  // она разъедется с голосом ровно на величину компенсации задержки.
+  const harmonyGain = options.harmonyGain ?? 0;
+  if (harmony && harmonyGain > 0) {
+    const alignedHarmony = toStereo(harmony).map((channel) =>
+      fitToFrames(shiftSamples(channel, offsetSamples), frames),
+    );
+    const harmonyBuffer = ctx.createBuffer(2, frames, sampleRate);
+    harmonyBuffer.copyToChannel(alignedHarmony[0], 0);
+    harmonyBuffer.copyToChannel(alignedHarmony[1], 1);
+
+    const harmonySource = ctx.createBufferSource();
+    harmonySource.buffer = harmonyBuffer;
+    const gain = ctx.createGain();
+    gain.gain.value = harmonyGain;
+    // Мимо реверба: подпевка и так размазана расхождением голосов, а
+    // второй хвост превращает её в кашу.
+    harmonySource.connect(gain).connect(master);
+    harmonySource.start();
+  }
 
   // --- водяной знак ---
   if (options.watermark) {
