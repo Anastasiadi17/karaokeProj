@@ -1,19 +1,17 @@
-import { secToSamples, shiftSamples } from "./latency";
-import { createReverb } from "./reverb";
+import { buildMixGraph } from "./graph";
+import type { MixParams, MixSources } from "./graph";
+import { measureLoudness } from "./mastering";
 import type { Samples } from "./samples";
-import { generateWatermark } from "./watermark";
 
-export interface MixOptions {
-  /** Задержка записи в секундах. Положительная — голос запоздал. */
-  offsetSec: number;
-  voiceGain: number;
-  musicGain: number;
-  /** Доля обработанного сигнала, 0..1. */
-  reverbWet: number;
-  /** Громкость подпевки, 0 — её нет вовсе. */
-  harmonyGain?: number;
-  watermark: boolean;
-}
+/**
+ * Сведение в файл: тот же граф, что играет вживую, но просчитанный целиком.
+ *
+ * Устройство микса живёт в `graph.ts` и здесь не повторяется — иначе файл и
+ * прослушивание разъехались бы, как только кто-нибудь поправил бы одно из
+ * двух описаний.
+ */
+
+export type MixOptions = MixParams;
 
 export function bufferToChannels(buffer: AudioBuffer): Samples[] {
   return Array.from({ length: buffer.numberOfChannels }, (_, ch) =>
@@ -21,17 +19,50 @@ export function bufferToChannels(buffer: AudioBuffer): Samples[] {
   );
 }
 
-/** Подгоняет буфер под длину микса: лишнее режет, недостающее добивает тишиной. */
-function fitToFrames(channel: Samples, frames: number): Samples {
-  if (channel.length === frames) return channel;
-  const fitted = new Float32Array(frames);
-  fitted.set(channel.subarray(0, Math.min(frames, channel.length)));
-  return fitted;
+/** Пик всего микса: число, которым живой граф уравнивается с файлом. */
+export function peakOf(buffer: AudioBuffer): number {
+  let peak = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch += 1) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < data.length; i += 1) {
+      const value = Math.abs(data[i]);
+      if (value > peak) peak = value;
+    }
+  }
+  return peak;
 }
 
-function toStereo(channels: Samples[]): Samples[] {
-  if (channels.length >= 2) return channels.slice(0, 2);
-  return [channels[0], channels[0]];
+/**
+ * Меряет то, чего живой граф о себе не знает: пик и громкость всего микса.
+ *
+ * Оба числа существуют только у целого — просчитанного от начала до конца, —
+ * а прослушивание играет с середины и вперёд не смотрит. Поэтому целое
+ * считается один раз наперёд тем же графом, и живому пути отдаются готовые
+ * множители. Ползунки после этого двигаются свободно, и чем дальше они уходят
+ * от замеренного положения, тем старее числа: расхождение с файлом — доли
+ * децибела, следующее «Прослушать» считает заново.
+ */
+export async function measureMix(
+  sources: MixSources,
+  params: MixParams,
+): Promise<{ limit: number; loudnessDbfs: number }> {
+  const { music } = sources;
+  const ctx = new OfflineAudioContext(2, music.length, music.sampleRate);
+
+  const graph = buildMixGraph(ctx, sources, params);
+  graph.output.connect(ctx.destination);
+  graph.start();
+
+  const rendered = await ctx.startRendering();
+  const peak = peakOf(rendered);
+  const limit = peak > 1 ? 1 / peak : 1;
+
+  // Тише ровно во столько же раз — значит и громкость ниже ровно на столько
+  // же децибел. Второй проход ради этого не нужен.
+  return {
+    limit,
+    loudnessDbfs: measureLoudness(rendered) + 20 * Math.log10(limit),
+  };
 }
 
 export async function mixdown(
@@ -41,85 +72,13 @@ export async function mixdown(
   options: MixOptions,
   harmony: Samples[] | null = null,
 ): Promise<AudioBuffer> {
-  const frames = music.length;
-  const ctx = new OfflineAudioContext(2, frames, sampleRate);
+  const ctx = new OfflineAudioContext(2, music.length, sampleRate);
 
-  const master = ctx.createGain();
-  master.connect(ctx.destination);
+  const graph = buildMixGraph(ctx, { music, voice, harmony }, options);
+  graph.output.connect(ctx.destination);
+  graph.start();
 
-  // --- музыка ---
-  const musicGain = ctx.createGain();
-  musicGain.gain.value = options.musicGain;
-  const musicSource = ctx.createBufferSource();
-  musicSource.buffer = music;
-  musicSource.connect(musicGain).connect(master);
-  musicSource.start();
-
-  // --- голос со сдвигом ---
-  const offsetSamples = secToSamples(options.offsetSec, sampleRate);
-  const shifted = toStereo(voice).map((channel) =>
-    fitToFrames(shiftSamples(channel, offsetSamples), frames),
-  );
-
-  const voiceBuffer = ctx.createBuffer(2, frames, sampleRate);
-  voiceBuffer.copyToChannel(shifted[0], 0);
-  voiceBuffer.copyToChannel(shifted[1], 1);
-
-  const voiceSource = ctx.createBufferSource();
-  voiceSource.buffer = voiceBuffer;
-
-  const voiceGain = ctx.createGain();
-  voiceGain.gain.value = options.voiceGain;
-  voiceSource.connect(voiceGain);
-
-  const dry = ctx.createGain();
-  dry.gain.value = 1 - options.reverbWet;
-  voiceGain.connect(dry).connect(master);
-
-  if (options.reverbWet > 0) {
-    const wet = ctx.createGain();
-    wet.gain.value = options.reverbWet;
-    voiceGain.connect(createReverb(ctx)).connect(wet).connect(master);
-  }
-
-  voiceSource.start();
-
-  // Подпевка выводится из того же дубля, поэтому и сдвигается так же: иначе
-  // она разъедется с голосом ровно на величину компенсации задержки.
-  const harmonyGain = options.harmonyGain ?? 0;
-  if (harmony && harmonyGain > 0) {
-    const alignedHarmony = toStereo(harmony).map((channel) =>
-      fitToFrames(shiftSamples(channel, offsetSamples), frames),
-    );
-    const harmonyBuffer = ctx.createBuffer(2, frames, sampleRate);
-    harmonyBuffer.copyToChannel(alignedHarmony[0], 0);
-    harmonyBuffer.copyToChannel(alignedHarmony[1], 1);
-
-    const harmonySource = ctx.createBufferSource();
-    harmonySource.buffer = harmonyBuffer;
-    const gain = ctx.createGain();
-    gain.gain.value = harmonyGain;
-    // Мимо реверба: подпевка и так размазана расхождением голосов, а
-    // второй хвост превращает её в кашу.
-    harmonySource.connect(gain).connect(master);
-    harmonySource.start();
-  }
-
-  // --- водяной знак ---
-  if (options.watermark) {
-    const mark = generateWatermark(sampleRate, frames);
-    const markBuffer = ctx.createBuffer(2, frames, sampleRate);
-    markBuffer.copyToChannel(mark, 0);
-    markBuffer.copyToChannel(mark, 1);
-
-    const markSource = ctx.createBufferSource();
-    markSource.buffer = markBuffer;
-    markSource.connect(master);
-    markSource.start();
-  }
-
-  const rendered = await ctx.startRendering();
-  return limitToFullScale(rendered);
+  return limitToFullScale(await ctx.startRendering());
 }
 
 /**
@@ -130,17 +89,14 @@ export async function mixdown(
  * зажмёт кодировщик, но зажмёт грязно: щелчками, ровно теми, о которых
  * приложение честно предупреждает на входе. Поэтому весь микс тише ровно
  * настолько, насколько вылез пик, и не тише: громкость — дело ползунков.
+ *
+ * Это одно из двух мест, которые меряют микс целиком (второе — мастеринг), и
+ * потому единственные, которых живой граф повторить не может: вживую «всего
+ * микса» ещё не существует. Прослушивание берёт этот же множитель замером
+ * наперёд — см. `useStudio`.
  */
 function limitToFullScale(buffer: AudioBuffer): AudioBuffer {
-  let peak = 0;
-  for (let ch = 0; ch < buffer.numberOfChannels; ch += 1) {
-    const data = buffer.getChannelData(ch);
-    for (let i = 0; i < data.length; i += 1) {
-      const value = Math.abs(data[i]);
-      if (value > peak) peak = value;
-    }
-  }
-
+  const peak = peakOf(buffer);
   if (peak <= 1) return buffer;
 
   const gain = 1 / peak;

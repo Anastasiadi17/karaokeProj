@@ -11,12 +11,16 @@ import {
 } from "../../audio/latency";
 import { LevelMeter } from "../../audio/meter";
 import { measureOffset } from "../../audio/calibrate";
+import { buildMixGraph } from "../../audio/graph";
+import type { MixGraph } from "../../audio/graph";
 import { makeHarmony } from "../../audio/harmonizer";
-import { master } from "../../audio/mastering";
-import { mixdown } from "../../audio/mixdown";
+import {
+  createMasterChain,
+  makeupGainFor,
+  master,
+} from "../../audio/mastering";
+import { measureMix, mixdown } from "../../audio/mixdown";
 import { Monitor } from "../../audio/monitor";
-import { playBuffer } from "../../audio/playback";
-import type { Playback } from "../../audio/playback";
 import { MIC_CONSTRAINTS, Recorder } from "../../audio/recorder";
 import type { Samples } from "../../audio/samples";
 import { clearTake, loadTake, saveTake } from "../../audio/takeStore";
@@ -40,7 +44,15 @@ export function useStudio(
   const streamRef = useRef<MediaStream | null>(null);
   const playbackRef = useRef<AudioBufferSourceNode | null>(null);
   const takeRef = useRef<Samples[] | null>(null);
-  const previewRef = useRef<Playback | null>(null);
+  const previewRef = useRef<MixGraph | null>(null);
+  // Номер поколения прослушивания. Сборка микса длится секунды, и без него
+  // микс, заказанный до остановки, начинал играть уже после неё.
+  const previewEpochRef = useRef(0);
+  // Где играет прослушивание: с какого места дорожки начали и когда. Из этих
+  // двух чисел получается текущая позиция — она нужна, чтобы пересборка графа
+  // продолжила звук с того же места, а не с начала песни.
+  const previewFromRef = useRef(0);
+  const previewSinceRef = useRef(0);
   const harmonyRef = useRef<Samples[] | null>(null);
   // Смещение, выставленное человеком или взятое из хранилища, оценка контекста
   // перебивать не имеет права.
@@ -100,7 +112,14 @@ export function useStudio(
       monitorRef.current = new Monitor(ctx);
       meterRef.current = new LevelMeter(ctx);
 
-      monitorRef.current.setWet(reverbWetRef.current);
+      // Монитор сухой, без реверба.
+      //
+      // Раньше он повторял ползунок «Реверб», чтобы певец слышал в наушниках
+      // то же, что попадёт в файл. Довод держался ровно до живого пульта:
+      // теперь реверб слышно в прослушивании и подбирать его на слух есть где.
+      // А в наушниках хвост поверх круга в 20–40 мс звучит не как эффект, а
+      // как эхо собственного голоса — и петь под него нельзя.
+      monitorRef.current.setWet(0);
 
       const stored = loadOffset(window.localStorage);
       if (stored !== null) {
@@ -148,9 +167,9 @@ export function useStudio(
   }, []);
 
   const setReverbWet = useCallback((value: number) => {
-    // Наушники должны звучать так же, как будет звучать файл: иначе певец
-    // подбирает эффект на слух и получает в экспорте другой.
-    monitorRef.current?.setWet(value);
+    // В монитор не уходит: он сухой намеренно (см. создание монитора).
+    // Ползунок правит микс — тот, что играет в прослушивании, и тот, что
+    // уйдёт в файл.
     reverbWetRef.current = value;
     setReverbWetState(value);
   }, []);
@@ -213,6 +232,12 @@ export function useStudio(
   }, [setOffsetSec]);
 
   const stopPreview = useCallback(() => {
+    // Отменяется и то, что уже играет, и то, что ещё считается: остановить
+    // можно только начатое, а заказанный микс к этому моменту существует
+    // лишь как обещание. Без отмены он начинал звучать после «Остановить»,
+    // и остановить его было уже нечем — кнопка к тому времени говорила
+    // «Прослушать».
+    previewEpochRef.current += 1;
     previewRef.current?.stop();
     previewRef.current = null;
   }, []);
@@ -369,16 +394,29 @@ export function useStudio(
     }
   }, [client, mastering]);
 
-  const previewMix = useCallback(async () => {
+  /** Текущая позиция прослушивания в секундах дорожки. */
+  const previewPosition = useCallback(() => {
     const ctx = ctxRef.current;
-    if (!ctx) return;
+    if (!ctx || !previewRef.current) return 0;
+    return previewFromRef.current + (ctx.currentTime - previewSinceRef.current);
+  }, []);
 
-    if (previewRef.current) {
-      stopPreview();
-      setPreviewing(false);
-      return;
-    }
+  /**
+   * Заводит живой микс с указанного места.
+   *
+   * Ползунки после этого правят узлы прямо на ходу — ради этого граф и живой.
+   * Пересборка нужна только там, где меняется не громкость, а сам материал:
+   * сдвиг записи и появление подпевки. Тогда звук продолжается с той же
+   * секунды, а не с начала песни.
+   */
+  const startPreviewAt = useCallback(async (fromSec: number) => {
+    const ctx = ctxRef.current;
+    const music = musicRef.current;
+    const take = takeRef.current;
+    if (!ctx || !music || !take) return;
 
+    stopPreview();
+    const epoch = previewEpochRef.current;
     setMixing(true);
     setNotice(null);
     try {
@@ -386,14 +424,52 @@ export function useStudio(
       // обработчика нажатия.
       if (ctx.state !== "running") await ctx.resume();
 
-      const mixed = await buildMix();
-      if (!mixed) return;
+      if (harmonyGain > 0 && harmonyRef.current === null) {
+        harmonyRef.current = take.map((channel) => makeHarmony(channel));
+      }
 
-      setPreviewing(true);
-      previewRef.current = playBuffer(ctx, mixed, () => {
+      const sources = { music, voice: take, harmony: harmonyRef.current };
+      const params = {
+        offsetSec,
+        voiceGain,
+        musicGain,
+        reverbWet,
+        harmonyGain,
+        watermark: plan !== "pro",
+      };
+
+      // Числа, которых у живого графа нет: пик и громкость целого микса.
+      const { limit, loudnessDbfs } = await measureMix(sources, params);
+      // Пока считался микс, прослушивание могли отменить — например начав
+      // запись. Тогда играть уже нечего и незачем: этот звук пошёл бы в
+      // микрофон поверх нового дубля.
+      if (epoch !== previewEpochRef.current) return;
+
+      const graph = buildMixGraph(ctx, sources, params);
+
+      // Поправка на пик — то же самое, что делает `limitToFullScale` в файле.
+      const trim = ctx.createGain();
+      trim.gain.value = limit;
+      graph.output.connect(trim);
+
+      if (mastering) {
+        const chain = createMasterChain(ctx, makeupGainFor(loudnessDbfs));
+        trim.connect(chain.input);
+        chain.output.connect(ctx.destination);
+      } else {
+        trim.connect(ctx.destination);
+      }
+
+      graph.onEnded(() => {
         previewRef.current = null;
         setPreviewing(false);
       });
+
+      previewFromRef.current = fromSec;
+      previewSinceRef.current = ctx.currentTime;
+      previewRef.current = graph;
+      setPreviewing(true);
+      graph.start(0, fromSec);
     } catch {
       setNotice(
         "Не удалось собрать микс для прослушивания. Попробуйте ещё раз.",
@@ -401,7 +477,23 @@ export function useStudio(
     } finally {
       setMixing(false);
     }
-  }, [buildMix, stopPreview]);
+  }, [stopPreview, offsetSec, voiceGain, musicGain, reverbWet, harmonyGain,
+      mastering, plan]);
+
+  /** Пересобирает идущее прослушивание, не сдвигая его во времени. */
+  const rebuildPreview = useCallback(() => {
+    if (!previewRef.current) return;
+    void startPreviewAt(previewPosition());
+  }, [startPreviewAt, previewPosition]);
+
+  const previewMix = useCallback(async () => {
+    if (previewRef.current) {
+      stopPreview();
+      setPreviewing(false);
+      return;
+    }
+    await startPreviewAt(0);
+  }, [startPreviewAt, stopPreview]);
 
   /**
    * Убирает исходник и дорожки с сервера, не трогая студию.
@@ -473,6 +565,61 @@ export function useStudio(
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [hasTake]);
+
+  // --- живые ползунки -------------------------------------------------
+  //
+  // Эффектами, а не обёртками над setState: обработчик увидел бы значение
+  // того рендера, в котором родился, и в живой микс уезжало бы предыдущее
+  // положение ползунка. Зависимость намеренно одна на каждый эффект — здесь
+  // важно «поменялось именно это», а не полный список того, что читается
+  // внутри.
+
+  // Пересборка берётся через ссылку, а не из зависимостей: она меняется на
+  // каждом рендере, и в списке зависимостей означала бы полную пересборку
+  // микса на каждое движение любого ползунка — ровно то, от чего живой граф
+  // и избавляет. Эффект стоит первым, чтобы к моменту работы остальных в
+  // ссылке лежала свежая функция.
+  const rebuildRef = useRef(rebuildPreview);
+  useEffect(() => {
+    rebuildRef.current = rebuildPreview;
+  });
+
+  useEffect(() => {
+    previewRef.current?.setVoiceGain(voiceGain);
+  }, [voiceGain]);
+
+  useEffect(() => {
+    previewRef.current?.setMusicGain(musicGain);
+  }, [musicGain]);
+
+  useEffect(() => {
+    previewRef.current?.setReverbWet(reverbWet);
+  }, [reverbWet]);
+
+  useEffect(() => {
+    if (!previewRef.current) return;
+    // Подпевки может ещё не быть: она считается один раз на дубль и в графе
+    // до первого движения ползунка отсутствует. Тогда её сначала надо
+    // посчитать, а это уже пересборка.
+    if (harmonyGain > 0 && harmonyRef.current === null) {
+      rebuildRef.current();
+      return;
+    }
+    previewRef.current.setHarmonyGain(harmonyGain);
+  }, [harmonyGain]);
+
+  useEffect(() => {
+    // Сдвиг меняет не громкость, а сам материал: голос и подпевка пишутся в
+    // буферы заново. Дешевле этого способа нет, и стык на слух — его цена.
+    rebuildRef.current();
+  }, [offsetSec]);
+
+  useEffect(() => {
+    // Мастеринг — не ползунок, а цепочка узлов, и появляется она только при
+    // сборке. Включили посреди прослушивания — значит собираем заново, иначе
+    // человек заплатил кредит и ничего не услышал.
+    if (mastering) rebuildRef.current();
+  }, [mastering]);
 
   return {
     ready,

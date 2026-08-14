@@ -62,6 +62,108 @@ async function grantCredits(
   expect(response.status()).toBe(200);
 }
 
+/**
+ * Помечает все источники звука живого контекста: играет ли, остановлен ли.
+ *
+ * Иначе сквозной сценарий глух: кнопки переключаются правильно, а звук
+ * продолжает идти, и тест этого не видит. Ставится до первого перехода.
+ */
+async function watchSources(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    const log: { started: boolean; stopped: boolean; ended: boolean }[] = [];
+    (window as unknown as { __sources: typeof log }).__sources = log;
+
+    const create = AudioContext.prototype.createBufferSource;
+    AudioContext.prototype.createBufferSource = function patched(
+      this: AudioContext,
+    ) {
+      const node = create.call(this);
+      const entry = { started: false, stopped: false, ended: false };
+      log.push(entry);
+      const start = node.start.bind(node);
+      const stop = node.stop.bind(node);
+      node.start = (...args: Parameters<AudioBufferSourceNode["start"]>) => {
+        entry.started = true;
+        return start(...args);
+      };
+      node.stop = (...args: Parameters<AudioBufferSourceNode["stop"]>) => {
+        entry.stopped = true;
+        return stop(...args);
+      };
+      node.addEventListener("ended", () => {
+        entry.ended = true;
+      });
+      return node;
+    };
+
+    // Значения громкостей живого контекста: по ним видно, доехал ли ползунок
+    // до звука. Без этого «ничего не пересобралось» одинаково верно и для
+    // работающего пульта, и для ползунка, не подключённого никуда.
+    const gains: GainNode[] = [];
+    const createGain = AudioContext.prototype.createGain;
+    AudioContext.prototype.createGain = function patchedGain(
+      this: AudioContext,
+    ) {
+      const node = createGain.call(this);
+      gains.push(node);
+      return node;
+    };
+    (window as unknown as { __gainValues: () => number[] }).__gainValues = () =>
+      gains.map((g) => g.gain.value);
+  });
+}
+
+async function gainValues(page: import("@playwright/test").Page) {
+  return page.evaluate(() =>
+    (window as unknown as { __gainValues: () => number[] }).__gainValues(),
+  );
+}
+
+/**
+ * Синус на заданную длину. Общая фикстура длится три секунды, а сценарию про
+ * оставшийся звук нужна дорожка длиннее, чем всё ожидание в нём: на короткой
+ * любой забытый источник успевает доиграть сам, и проверка проходит впустую.
+ */
+function makeWav(seconds: number): Buffer {
+  const sampleRate = 44100;
+  const channels = 2;
+  const frames = sampleRate * seconds;
+  const dataBytes = frames * channels * 2;
+  const buffer = Buffer.alloc(44 + dataBytes);
+  buffer.write("RIFF", 0, "ascii");
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write("WAVE", 8, "ascii");
+  buffer.write("fmt ", 12, "ascii");
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(channels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * channels * 2, 28);
+  buffer.writeUInt16LE(channels * 2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36, "ascii");
+  buffer.writeUInt32LE(dataBytes, 40);
+  for (let i = 0; i < frames; i += 1) {
+    const value = Math.round(
+      12000 * Math.sin((2 * Math.PI * 440 * i) / sampleRate),
+    );
+    for (let ch = 0; ch < channels; ch += 1) {
+      buffer.writeInt16LE(value, 44 + (i * channels + ch) * 2);
+    }
+  }
+  return buffer;
+}
+
+async function playingSources(page: import("@playwright/test").Page) {
+  return page.evaluate(() =>
+    (
+      window as unknown as {
+        __sources: { started: boolean; stopped: boolean; ended: boolean }[];
+      }
+    ).__sources.filter((s) => s.started && !s.stopped && !s.ended),
+  );
+}
+
 test("путь от загрузки до скачанного микса", async ({ page }) => {
   await signIn(page);
 
@@ -132,6 +234,95 @@ test("микс можно послушать до скачивания", async (
 
   // Прослушивание не должно мешать экспорту: дубль остаётся на месте.
   await expect(page.getByRole("button", { name: "Скачать микс" })).toBeEnabled();
+});
+
+test("микс, заказанный перед записью, не остаётся играть после неё", async ({
+  page,
+}) => {
+  await watchSources(page);
+  await signIn(page);
+
+  await page.setInputFiles('input[type="file"]', {
+    name: "long.wav",
+    mimeType: "audio/wav",
+    buffer: makeWav(20),
+  });
+  await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
+    timeout: 90_000,
+  });
+
+  // Дубль, чтобы было что слушать.
+  await page.getByRole("button", { name: "Записать" }).click();
+  const stopButton = page.getByRole("button", { name: "Остановить", exact: true });
+  await expect(stopButton).toBeVisible();
+  await page.waitForTimeout(800);
+  await stopButton.click();
+  await expect(page.getByRole("button", { name: "Скачать микс" })).toBeEnabled();
+
+  // Оба нажатия в одном такте: так окно между заказом микса и его началом
+  // не зависит от того, насколько быстра машина.
+  await page.evaluate(() => {
+    const byName = (name: string) =>
+      [...document.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === name,
+      );
+    byName("Прослушать")?.click();
+    byName("Записать")?.click();
+  });
+
+  await expect(stopButton).toBeVisible();
+  await page.waitForTimeout(3000);
+  await stopButton.click();
+  await page.waitForTimeout(1000);
+
+  // Минусовка длится двадцать секунд, то есть всё, что ещё звучит здесь,
+  // звучит вопреки остановке, а не по инерции короткой фикстуры.
+  expect(await playingSources(page)).toEqual([]);
+});
+
+test("ползунок правит идущий микс, а не пересобирает его", async ({ page }) => {
+  await watchSources(page);
+  await signIn(page);
+
+  await page.setInputFiles('input[type="file"]', {
+    name: "long.wav",
+    mimeType: "audio/wav",
+    buffer: makeWav(20),
+  });
+  await expect(page.getByRole("heading", { name: "Студия" })).toBeVisible({
+    timeout: 90_000,
+  });
+
+  await page.getByRole("button", { name: "Записать" }).click();
+  const stopButton = page.getByRole("button", { name: "Остановить", exact: true });
+  await expect(stopButton).toBeVisible();
+  await page.waitForTimeout(800);
+  await stopButton.click();
+
+  await page.getByRole("button", { name: "Прослушать" }).click();
+  await expect(
+    page.getByRole("button", { name: "Остановить прослушивание" }),
+  ).toBeVisible({ timeout: 15_000 });
+
+  const before = await playingSources(page);
+  expect(before.length).toBeGreaterThan(0);
+
+  // Точное совпадение: слово «голос» есть и в подписи к монитору.
+  await page.getByLabel("Минусовка", { exact: true }).fill("0.2");
+  await page.getByLabel("Голос", { exact: true }).fill("1.6");
+  await page.waitForTimeout(500);
+
+  // Тот же самый звук, что играл до движения ползунков: ни одного нового
+  // источника, ни одного остановленного. Пересборка была бы слышна разрывом.
+  expect(await playingSources(page)).toEqual(before);
+
+  // И при этом ползунки доехали до узлов, а не остались на экране.
+  const gains = await gainValues(page);
+  expect(gains.some((value) => Math.abs(value - 0.2) < 0.01)).toBe(true);
+  expect(gains.some((value) => Math.abs(value - 1.6) < 0.01)).toBe(true);
+  await expect(
+    page.getByRole("button", { name: "Остановить прослушивание" }),
+  ).toBeVisible();
 });
 
 test("трек можно убрать с сервера, не теряя студию", async ({ page }) => {

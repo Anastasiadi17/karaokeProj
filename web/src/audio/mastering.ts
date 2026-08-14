@@ -44,6 +44,44 @@ function peakOf(buffer: AudioBuffer): number {
   return peak;
 }
 
+/** Множитель подъёма к целевой громкости для измеренного микса. */
+export function makeupGainFor(loudnessDbfs: number, target = TARGET_DBFS) {
+  return Number.isFinite(loudnessDbfs)
+    ? Math.pow(10, (target - loudnessDbfs) / 20)
+    : 1;
+}
+
+/**
+ * Та же обработка, но узлами на живом контексте — для прослушивания.
+ *
+ * Отличие от `master` одно и оно неустранимо: подъём громкости здесь берётся
+ * готовым числом, потому что вживую «весь микс» ещё не прозвучал и мерить
+ * нечего. Число приходит замером наперёд, и пока ползунки не ушли далеко от
+ * замеренного положения, разница с файлом — доли децибела. Финальной поправки
+ * на пик (её в `master` делает последний проход) здесь нет вовсе.
+ */
+export function createMasterChain(
+  ctx: BaseAudioContext,
+  makeupGain: number,
+): { input: AudioNode; output: AudioNode } {
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = "highpass";
+  highpass.frequency.value = 80;
+
+  const compressor = ctx.createDynamicsCompressor();
+  compressor.threshold.value = -18;
+  compressor.knee.value = 12;
+  compressor.ratio.value = 3;
+  compressor.attack.value = 0.01;
+  compressor.release.value = 0.2;
+
+  const makeup = ctx.createGain();
+  makeup.gain.value = makeupGain;
+
+  highpass.connect(compressor).connect(makeup);
+  return { input: highpass, output: makeup };
+}
+
 export async function master(
   buffer: AudioBuffer,
   options: MasterOptions = {},
@@ -79,7 +117,7 @@ export async function master(
   compressor.release.value = 0.2;
 
   const makeup = ctx.createGain();
-  makeup.gain.value = Math.pow(10, (target - loudness) / 20);
+  makeup.gain.value = makeupGainFor(loudness, target);
 
   source.connect(highpass).connect(compressor).connect(makeup)
     .connect(ctx.destination);
