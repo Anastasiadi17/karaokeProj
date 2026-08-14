@@ -163,7 +163,7 @@ def test_delete_during_processing_leaves_no_files(tmp_path, make_wav,
         free_monthly_operations=100,
     )
     monkeypatch.setattr(
-        deps, "build_separator", lambda s, gpu=None: slow_separator
+        deps, "build_separator", lambda s, gpu=None, storage=None: slow_separator
     )
 
     with TestClient(create_app(settings)) as client:

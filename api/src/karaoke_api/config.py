@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     r2_access_key: str = ""
     r2_secret_key: str = ""
 
+    # Обработка на стороне RunPod Serverless: separator="runpod".
+    runpod_endpoint: str = ""
+    runpod_api_key: str = ""
+    runpod_timeout_sec: float = 900.0
+
     max_duration_sec: int = 600
     # Байт на секунду звука отличается между разрешёнными форматами в 36 раз
     # (mp3 128 кбит/с — 16 000 Б/с, wav 96 кГц/24 бит стерео — 576 000 Б/с),

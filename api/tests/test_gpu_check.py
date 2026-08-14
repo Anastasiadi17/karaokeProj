@@ -187,7 +187,7 @@ def test_app_state_passes_gpu_verdict_to_separator(tmp_path, monkeypatch):
     """
     seen = {}
 
-    def spy(settings, gpu=None):
+    def spy(settings, gpu=None, storage=None):
         seen["gpu"] = gpu
         return FakeSeparator()
 

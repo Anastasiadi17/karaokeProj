@@ -1,0 +1,52 @@
+# Образ воркера RunPod Serverless: только разделение, без API и фронта.
+#
+# ВНИМАНИЕ: ни разу не собирался и не запускался — ни демона Docker, ни
+# аккаунта RunPod в среде разработки нет. Черновик, который надо один раз
+# прогнать; список того, что отвалится вероятнее всего, — в конце файла.
+#
+# Слой зависимостей намеренно повторяет основной Dockerfile: два образа
+# должны нести одну и ту же версию торча и demucs, иначе результат
+# разделения начнёт зависеть от того, куда попала задача.
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3-pip ffmpeg libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+COPY api/pyproject.toml api/README.md ./
+RUN pip install --index-url https://download.pytorch.org/whl/cu128 \
+        torch torchaudio
+
+COPY api/src ./src
+RUN pip install -e ".[gpu]" && pip install runpod
+
+# Веса кладутся в образ, а не качаются при первом запросе: иначе к холодному
+# старту добавляется ещё и сеть, а платит за неё ожидание человека (4.5).
+ENV TORCH_HOME=/opt/models
+RUN python -c "from karaoke_api.separation.demucs_local import DemucsSeparator; \
+DemucsSeparator(device='cpu')._ensure_model()" || \
+    echo "ВНИМАНИЕ: веса не скачались на сборке, первый запрос заплатит за это"
+
+CMD ["python", "-m", "karaoke_api.worker.handler"]
+
+# Что проверить при первой сборке и первом запуске:
+#   1. `_ensure_model()` на CPU действительно тянет те же веса, что нужны на
+#      GPU, — иначе строка выше бесполезна.
+#   2. Прогретый PTX/cuDNN-кеш в слой не попадает: он появляется только при
+#      настоящем инференсе на той же архитектуре GPU, что и в проде. Если
+#      холодный старт остаётся ≈20 с, нужен прогон инференса на сборке в
+#      совместимом окружении, а не на CPU.
+#   3. `runpod.serverless.start` находит handler и отдаёт ответ в том виде,
+#      в каком его ждёт `RunpodSeparator` (`{"output": {...}}`).
+#   4. Оба образа собраны из одного слоя зависимостей — версии torch и demucs
+#      совпадают с основным.

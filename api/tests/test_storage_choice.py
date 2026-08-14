@@ -40,3 +40,52 @@ def test_incomplete_r2_is_a_refusal_not_a_quiet_fallback(tmp_path):
 def test_unknown_storage_is_refused(tmp_path):
     with pytest.raises(ValueError):
         build_storage(_settings(tmp_path, storage="дискета"))
+
+
+# --- выбор обработки ---------------------------------------------------
+
+
+def _r2(tmp_path, **kwargs):
+    return _settings(
+        tmp_path, storage="r2", r2_endpoint="https://acc.r2.example",
+        r2_bucket="karaoke", r2_access_key="k", r2_secret_key="s", **kwargs,
+    )
+
+
+def test_runpod_needs_its_endpoint_and_key(tmp_path):
+    from karaoke_api.deps import build_separator
+
+    with pytest.raises(ValueError) as exc:
+        build_separator(_r2(tmp_path, separator="runpod"), None, object())
+
+    assert "KARAOKE_RUNPOD_ENDPOINT" in str(exc.value)
+
+
+def test_runpod_refuses_local_storage(tmp_path):
+    """Воркер живёт на чужой машине: локальный диск ему недоступен, и молчание
+    здесь дало бы задачи, падающие на скачивании исходника."""
+    from karaoke_api.deps import build_separator
+
+    settings = _settings(
+        tmp_path, separator="runpod",
+        runpod_endpoint="https://api.runpod.ai/v2/x", runpod_api_key="k",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        build_separator(settings, None, object())
+
+    assert "KARAOKE_STORAGE=r2" in str(exc.value)
+
+
+def test_runpod_is_built_when_everything_is_in_place(tmp_path):
+    from karaoke_api.deps import build_separator
+    from karaoke_api.separation.runpod_remote import RunpodSeparator
+
+    settings = _r2(
+        tmp_path, separator="runpod",
+        runpod_endpoint="https://api.runpod.ai/v2/x", runpod_api_key="k",
+    )
+
+    separator = build_separator(settings, None, object())
+
+    assert isinstance(separator, RunpodSeparator)

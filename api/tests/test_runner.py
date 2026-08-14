@@ -284,7 +284,7 @@ def test_warmup_runs_before_the_first_job_is_claimed(tmp_path, monkeypatch,
     что порядок задают именно он и run_forever, а не прямой вызов метода.
     """
     separator = RecordingSeparator()
-    monkeypatch.setattr(deps, "build_separator", lambda s, gpu=None: separator)
+    monkeypatch.setattr(deps, "build_separator", lambda s, gpu=None, storage=None: separator)
     settings = Settings(
         data_dir=tmp_path / "data",
         db_path=tmp_path / "data" / "db.sqlite",

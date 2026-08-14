@@ -18,7 +18,7 @@ def slow_app(tmp_path, monkeypatch, slow_separator):
         free_monthly_operations=100,
     )
     monkeypatch.setattr(
-        deps, "build_separator", lambda s, gpu=None: slow_separator
+        deps, "build_separator", lambda s, gpu=None, storage=None: slow_separator
     )
     return settings, slow_separator
 

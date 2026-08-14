@@ -15,7 +15,8 @@ from .track_lock import TrackLock
 
 
 def build_separator(settings: Settings,
-                    gpu: GpuStatus | None = None) -> StemSeparator:
+                    gpu: GpuStatus | None = None,
+                    storage: Storage | None = None) -> StemSeparator:
     """Собрать разделитель, считаясь с результатом проверки GPU.
 
     Без gpu DemucsSeparator выбирает устройство сам по
@@ -28,6 +29,31 @@ def build_separator(settings: Settings,
     """
     if settings.separator == "fake":
         return FakeSeparator()
+
+    if settings.separator == "runpod":
+        missing = [
+            name for name in ("runpod_endpoint", "runpod_api_key")
+            if not getattr(settings, name)
+        ]
+        if missing:
+            raise ValueError(
+                "KARAOKE_SEPARATOR=runpod, но не заданы: "
+                + ", ".join(f"KARAOKE_{name.upper()}" for name in missing)
+            )
+        if settings.storage != "r2":
+            # Воркер живёт на чужой машине: локальный диск ему недоступен, и
+            # молча уйти на него значит получить задачи, падающие на скачивании
+            # исходника, — а виноватым будет выглядеть RunPod.
+            raise ValueError(
+                "KARAOKE_SEPARATOR=runpod требует KARAOKE_STORAGE=r2: "
+                "воркеру нужны файлы, доступные с чужой машины"
+            )
+        from .separation.runpod_remote import RunpodSeparator
+
+        return RunpodSeparator(
+            settings.runpod_endpoint, settings.runpod_api_key, storage,
+            timeout_sec=settings.runpod_timeout_sec,
+        )
     from .separation.demucs_local import DemucsSeparator
 
     if gpu is not None and not gpu.available:
@@ -83,7 +109,7 @@ class AppState:
         store = JobStore(settings.db_path)
         accounts = AccountStore(settings.db_path)
         storage = build_storage(settings)
-        separator = build_separator(settings, gpu)
+        separator = build_separator(settings, gpu, storage)
         track_lock = TrackLock()
         runner = JobRunner(
             store, storage, separator, Path(settings.data_dir) / "work",
