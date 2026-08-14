@@ -8,7 +8,9 @@ from .jobs.runner import JobRunner
 from .jobs.store import JobStore
 from .separation.base import StemSeparator
 from .separation.fake import FakeSeparator
+from .storage.base import Storage
 from .storage.local import LocalStorage
+from .storage.r2 import R2Storage
 from .track_lock import TrackLock
 
 
@@ -33,12 +35,44 @@ def build_separator(settings: Settings,
     return DemucsSeparator()
 
 
+def build_storage(settings: Settings) -> Storage:
+    """Выбирает хранилище по настройке.
+
+    Неполная настройка R2 — это отказ на старте, а не тихий откат на диск.
+    Молчаливый откат хуже падения: файлы лягут на диск, который никто не
+    бэкапит, обработка на чужой машине перестанет их находить, и виноватым
+    окажется RunPod, а не забытая переменная окружения.
+    """
+    if settings.storage == "local":
+        return LocalStorage(Path(settings.data_dir) / "files")
+
+    if settings.storage == "r2":
+        missing = [
+            name for name in ("r2_endpoint", "r2_bucket", "r2_access_key",
+                              "r2_secret_key")
+            if not getattr(settings, name)
+        ]
+        if missing:
+            raise ValueError(
+                "KARAOKE_STORAGE=r2, но не заданы: "
+                + ", ".join(f"KARAOKE_{name.upper()}" for name in missing)
+            )
+        return R2Storage(
+            settings.r2_endpoint, settings.r2_bucket,
+            settings.r2_access_key, settings.r2_secret_key,
+        )
+
+    raise ValueError(
+        f"неизвестное хранилище {settings.storage!r}: ожидается local или r2"
+    )
+
+
 @dataclass
 class AppState:
     settings: Settings
     store: JobStore
     accounts: AccountStore
-    storage: LocalStorage
+    storage: Storage
     separator: StemSeparator
     runner: JobRunner
     track_lock: TrackLock
@@ -48,7 +82,7 @@ class AppState:
               gpu: GpuStatus | None = None) -> "AppState":
         store = JobStore(settings.db_path)
         accounts = AccountStore(settings.db_path)
-        storage = LocalStorage(Path(settings.data_dir) / "files")
+        storage = build_storage(settings)
         separator = build_separator(settings, gpu)
         track_lock = TrackLock()
         runner = JobRunner(
